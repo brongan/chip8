@@ -311,7 +311,7 @@ fn render_screen(screen: &Screen) -> egui::ColorImage {
 
 impl DebuggerApp {
     fn new(cc: &eframe::CreationContext, rom: Vec<u8>) -> Self {
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
         let ctx = cc.egui_ctx.clone();
         let mut emulator = Emulator::new(rom);
         thread::spawn(move || {
@@ -323,9 +323,9 @@ impl DebuggerApp {
                     if tx.send(frame).is_err() {
                         break;
                     }
+                    ctx.request_repaint();
                 }
                 sleep(instruction_time - (Instant::now().duration_since(start)));
-                ctx.request_repaint();
             }
         });
 
@@ -346,19 +346,24 @@ impl DebuggerApp {
             self.screen = frame;
         }
     }
-}
 
-impl eframe::App for DebuggerApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn render_content(&mut self, ui: &mut egui::Ui) {
         self.check_for_updates();
         let image = render_screen(&self.screen);
         self.display_texture
             .set(image, egui::TextureOptions::NEAREST);
+
+        let image = render_screen(&self.screen);
+        self.display_texture
+            .set(image, egui::TextureOptions::NEAREST);
+        ui.add(egui::Image::new(&self.display_texture).fit_to_original_size(16.0));
+    }
+}
+
+impl eframe::App for DebuggerApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
-            let image = render_screen(&self.screen);
-            self.display_texture
-                .set(image, egui::TextureOptions::NEAREST);
-            ui.add(egui::Image::new(&self.display_texture).fit_to_original_size(4.0));
+            self.render_content(ui);
         });
     }
 }
@@ -366,9 +371,13 @@ impl eframe::App for DebuggerApp {
 fn main() -> eframe::Result {
     let rom = std::env::args().nth(1).unwrap();
     let rom = std::fs::read(rom).unwrap();
+    let native_options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default().with_inner_size(egui::Vec2::new(1024.0, 512.0)),
+        ..Default::default()
+    };
     eframe::run_native(
-        "Chips8",
-        eframe::NativeOptions::default(),
+        "Chip-8",
+        native_options,
         Box::new(|cc| Ok(Box::new(DebuggerApp::new(cc, rom)))),
     )
 }
