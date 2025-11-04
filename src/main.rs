@@ -19,6 +19,18 @@ struct CPU {
     screen: Screen,
 }
 
+impl CPU {
+    fn new(rom: Vec<u8>) -> Self {
+        let mut memory = Memory::default();
+        let len = std::cmp::min(rom.len(), memory.0.len());
+        memory.0[0..len].copy_from_slice(&rom[0..len]);
+        Self {
+            memory,
+            ..Default::default()
+        }
+    }
+}
+
 #[derive(Debug)]
 struct Memory(pub [u8; 4096]);
 
@@ -43,22 +55,22 @@ struct Registers(pub [u8; 16]);
 #[derive(Debug, strum::FromRepr, Copy, Clone)]
 #[repr(u8)]
 enum Register {
-    V0,
-    V1,
-    V2,
-    V3,
-    V4,
-    V5,
-    V6,
-    V7,
-    V8,
-    V9,
-    VA,
-    VB,
-    VC,
-    VD,
-    VE,
-    VF,
+    V0 = 0x0,
+    V1 = 0x1,
+    V2 = 0x2,
+    V3 = 0x3,
+    V4 = 0x4,
+    V5 = 0x5,
+    V6 = 0x6,
+    V7 = 0x7,
+    V8 = 0x8,
+    V9 = 0x9,
+    VA = 0xa,
+    VB = 0xb,
+    VC = 0xc,
+    VD = 0xd,
+    VE = 0xe,
+    VF = 0xf,
 }
 
 #[derive(Default, Debug)]
@@ -91,12 +103,12 @@ impl Instruction {
             _ => (),
         }
         let nib1 = (opcode >> 12) as u8;
-        let nib2 = (opcode >> 8) as u8 & 0x00FF;
+        let nib2 = (opcode >> 8) as u8 & 0xF;
         let register = Register::from_repr(nib2).unwrap();
         let addr = opcode & 0x0FFF;
         let x = &register;
         let y = Register::from_repr((opcode as u8) >> 4).unwrap();
-        let n = opcode as u8 & 0xFF;
+        let n = opcode as u8 & 0xF;
         match nib1 {
             0x1 => Jump(opcode & 0x0FFF),
             // 6XNN (set register VX)
@@ -180,9 +192,9 @@ struct Emulator {
 }
 
 impl Emulator {
-    fn new() -> Self {
+    fn new(rom: Vec<u8>) -> Self {
         Self {
-            cpu: CPU::default(),
+            cpu: CPU::new(rom),
             frame_counter: FrameCounter::default(),
         }
     }
@@ -219,10 +231,10 @@ fn render_screen(screen: &Screen) -> egui::ColorImage {
 }
 
 impl DebuggerApp {
-    fn new(cc: &eframe::CreationContext) -> Self {
+    fn new(cc: &eframe::CreationContext, rom: Vec<u8>) -> Self {
         let (tx, rx) = std::sync::mpsc::channel();
         let ctx = cc.egui_ctx.clone();
-        let mut emulator = Emulator::new();
+        let mut emulator = Emulator::new(rom);
         thread::spawn(move || {
             loop {
                 let start = Instant::now();
@@ -271,9 +283,10 @@ impl eframe::App for DebuggerApp {
 
 fn main() -> eframe::Result {
     let rom = std::env::args().nth(1).unwrap();
+    let rom = std::fs::read(rom).unwrap();
     eframe::run_native(
         "Chips8",
         eframe::NativeOptions::default(),
-        Box::new(|cc| Ok(Box::new(DebuggerApp::new(cc)))),
+        Box::new(|cc| Ok(Box::new(DebuggerApp::new(cc, rom)))),
     )
 }
