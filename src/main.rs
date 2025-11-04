@@ -351,6 +351,9 @@ impl DebuggerApp {
 impl eframe::App for DebuggerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.check_for_updates();
+        let image = render_screen(&self.screen);
+        self.display_texture
+            .set(image, egui::TextureOptions::NEAREST);
         egui::CentralPanel::default().show(ctx, |ui| {
             let image = render_screen(&self.screen);
             self.display_texture
