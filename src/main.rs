@@ -22,21 +22,36 @@ struct CPU {
 impl CPU {
     fn new(rom: Vec<u8>) -> Self {
         let mut memory = Memory::default();
-        let len = std::cmp::min(rom.len(), memory.0.len());
-        memory.0[0..len].copy_from_slice(&rom[0..len]);
+        let len = std::cmp::min(rom.len(), memory.0.len() - 0x200);
+        memory.0[0x200..len + 0x200].copy_from_slice(&rom[0..len]);
         Self {
             memory,
+            pc: 0x200,
             ..Default::default()
         }
     }
 }
 
 #[derive(Debug)]
-struct Memory(pub [u8; 4096]);
+struct Memory([u8; 4096]);
 
 impl Default for Memory {
     fn default() -> Self {
         Self([0; 4096])
+    }
+}
+
+impl Memory {
+    fn get(&self, addr: u16) -> u8 {
+        self.0[addr as usize]
+    }
+
+    fn set(&mut self, addr: u16, val: u8) {
+        self.0[addr as usize] = val
+    }
+
+    fn get_mut(&mut self, addr: u16) -> &mut u8 {
+        &mut self.0[addr as usize]
     }
 }
 
@@ -50,7 +65,21 @@ impl Default for Screen {
 }
 
 #[derive(Default, Debug)]
-struct Registers(pub [u8; 16]);
+struct Registers([u8; 16]);
+
+impl Registers {
+    fn get(&self, register: Register) -> u8 {
+        self.0[register as u8 as usize]
+    }
+
+    fn set(&mut self, register: Register, val: u8) {
+        self.0[register as u8 as usize] = val
+    }
+
+    fn get_mut(&mut self, register: Register) -> &mut u8 {
+        &mut self.0[register as u8 as usize]
+    }
+}
 
 #[derive(Debug, strum::FromRepr, Copy, Clone)]
 #[repr(u8)]
@@ -119,7 +148,7 @@ impl Instruction {
             0xA => SetIndex(addr),
             // DXYN (display/draw)
             0xD => Display(*x, y, n),
-            _ => todo!(),
+            b => todo!("Unknown opcode: 0x{:04x}", b),
         }
     }
 }
@@ -130,24 +159,55 @@ impl CPU {
         (self.memory.0[pc] as u16) << 8 | self.memory.0[pc + 1] as u16
     }
 
-    fn execute(&mut self, instruction: Instruction) {
+    fn execute(&mut self, instruction: Instruction) -> u16 {
         match instruction {
-            Instruction::ClearScreen => self.screen = Screen::default(),
-            Instruction::Jump(addr) => self.pc = addr,
-            Instruction::SetRegister(register, val) => {
-                self.registers.0[register as u8 as usize] = val
+            Instruction::ClearScreen => {
+                self.screen = Screen::default();
+                self.pc + 2
             }
-            Instruction::Add(register, val) => self.registers.0[register as u8 as usize] += val,
-            Instruction::SetIndex(val) => self.index = val,
-            Instruction::Display(x, y, val) => todo!(),
+            Instruction::Jump(addr) => addr,
+            Instruction::SetRegister(register, val) => {
+                self.registers.set(register, val);
+                self.pc + 2
+            }
+            Instruction::Add(register, val) => {
+                *self.registers.get_mut(register) += val;
+                self.pc + 2
+            }
+            Instruction::SetIndex(val) => {
+                self.index = val;
+                self.pc + 2
+            }
+            Instruction::Display(x, y, height) => {
+                let vx = self.registers.get(x);
+                let vy = self.registers.get(y);
+                let x = vx % 64;
+                let y = vy % 32;
+                let vf = self.registers.get_mut(Register::VF);
+                *vf = 0;
+                for (j, y) in (y..std::cmp::min(32, y + height)).enumerate() {
+                    let row = self.memory.get(self.index + j as u16);
+                    for (i, x) in (x..std::cmp::min(64, x + 8)).enumerate() {
+                        if row & (0b1 << (7 - i)) > 0 {
+                            if self.screen.0[y as usize][x as usize] {
+                                self.screen.0[y as usize][x as usize] = false;
+                                *vf = 1;
+                            } else {
+                                self.screen.0[y as usize][x as usize] = true;
+                            }
+                        }
+                    }
+                }
+
+                self.pc + 2
+            }
         }
     }
 
     pub fn tick(&mut self) {
         let instruction = self.fetch();
         let instruction = Instruction::decode(instruction);
-        self.execute(instruction);
-        self.pc += 2;
+        self.pc = self.execute(instruction);
     }
 
     /// The caller should tick the timers at a 60hz frequency.
