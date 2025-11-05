@@ -278,7 +278,7 @@ impl Instruction {
             0xF if nn == 0x33 => BinaryDecimalConversion(x),
             0xF if nn == 0x55 => StoreMemory(x),
             0xF if nn == 0x65 => LoadMemory(x),
-            b => todo!("Unknown opcode: 0x{:04x}", b),
+            _ => todo!("Unknown opcode: 0x{:04x}", opcode),
         }
     }
 }
@@ -344,8 +344,10 @@ impl CPU {
             Instruction::GetDelay(register) => todo!(),
             Instruction::GetKey(register) => todo!(),
             Instruction::JumpOffset(_) => todo!(),
-            Instruction::LoadMemory(register) => {
-                for (i, register) in Register::iter().enumerate() {
+            Instruction::LoadMemory(x) => {
+                let x = x as u8;
+                for i in 0..=x {
+                    let register = Register::from_repr(i).unwrap();
                     self.registers
                         .set(register, self.memory.get(self.index + i as u16));
                 }
@@ -359,8 +361,10 @@ impl CPU {
             Instruction::ShiftRight(register, register1) => todo!(),
             Instruction::SkipIfKey(register) => todo!(),
             Instruction::SkipIfNotKey(register) => todo!(),
-            Instruction::StoreMemory(register) => {
-                for (i, register) in Register::iter().enumerate() {
+            Instruction::StoreMemory(x) => {
+                let x = x as u8;
+                for i in 0..=x {
+                    let register = Register::from_repr(i).unwrap();
                     self.memory
                         .set(self.index + i as u16, self.registers.get(register));
                 }
@@ -483,7 +487,10 @@ impl DebuggerApp {
                     }
                     ctx.request_repaint();
                 }
-                sleep(instruction_time - (Instant::now().duration_since(start)));
+                let elapsed = start.elapsed();
+                if elapsed < instruction_time {
+                    sleep(instruction_time - elapsed);
+                }
             }
         });
 
@@ -522,10 +529,6 @@ impl DebuggerApp {
 
     fn render_content(&mut self, ui: &mut egui::Ui) {
         self.check_for_updates();
-        let image = render_screen(&self.screen);
-        self.display_texture
-            .set(image, egui::TextureOptions::NEAREST);
-
         let image = render_screen(&self.screen);
         self.display_texture
             .set(image, egui::TextureOptions::NEAREST);
