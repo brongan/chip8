@@ -5,6 +5,7 @@ use std::{
 };
 
 use eframe::egui::{self, Vec2};
+use rodio::{OutputStream, Sink, Source};
 use spin_sleep::sleep;
 
 #[derive(Default, Debug)]
@@ -278,20 +279,29 @@ impl Emulator {
         }
     }
 
-    fn tick(&mut self) -> Option<Screen> {
+    fn tick(&mut self) -> Option<EmulatorState> {
         self.cpu.tick();
         if self.frame_counter.tick() {
-            self.cpu.tick_timers();
-            return Some(self.cpu.screen());
+            return Some(EmulatorState {
+                beep: self.cpu.tick_timers(),
+                screen: self.cpu.screen(),
+            });
         }
         None
     }
 }
 
+struct EmulatorState {
+    beep: bool,
+    screen: Screen,
+}
+
 struct DebuggerApp {
-    rx: Receiver<Screen>,
+    rx: Receiver<EmulatorState>,
     screen: Screen,
     display_texture: egui::TextureHandle,
+    stream: OutputStream,
+    sink: Sink,
 }
 
 fn render_screen(screen: &Screen) -> egui::ColorImage {
@@ -319,8 +329,8 @@ impl DebuggerApp {
                 let start = Instant::now();
                 let ips = 700;
                 let instruction_time = Duration::from_secs_f64(1.0 / ips as f64);
-                if let Some(frame) = emulator.tick() {
-                    if tx.send(frame).is_err() {
+                if let Some(state) = emulator.tick() {
+                    if tx.send(state).is_err() {
                         break;
                     }
                     ctx.request_repaint();
@@ -334,16 +344,31 @@ impl DebuggerApp {
             .egui_ctx
             .load_texture("LCD", image, egui::TextureOptions::NEAREST);
 
+        let stream =
+            rodio::OutputStreamBuilder::open_default_stream().expect("open default audio stream");
+        let sink = rodio::Sink::connect_new(&stream.mixer());
+        let beep_sound = rodio::source::SineWave::new(440.0) // A 440hz tone
+            .amplify(0.20);
+        sink.append(beep_sound);
+        sink.pause();
+
         Self {
             rx,
             screen: Screen::default(),
             display_texture,
+            stream,
+            sink,
         }
     }
 
     fn check_for_updates(&mut self) {
-        if let Ok(frame) = self.rx.try_recv() {
-            self.screen = frame;
+        if let Ok(state) = self.rx.try_recv() {
+            self.screen = state.screen;
+            if state.beep {
+                self.sink.play();
+            } else {
+                self.sink.pause();
+            }
         }
     }
 
