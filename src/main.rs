@@ -7,6 +7,7 @@ use std::{
 use eframe::egui::{self, Vec2};
 use rodio::{OutputStream, Sink, Source};
 use spin_sleep::sleep;
+use strum::IntoEnumIterator;
 
 #[derive(Default, Debug)]
 struct CPU {
@@ -49,6 +50,10 @@ impl CPU {
             pc: 0x200,
             ..Default::default()
         }
+    }
+
+    fn is_beep(&self) -> bool {
+        self.sound_timer.get() > 0
     }
 }
 
@@ -101,7 +106,7 @@ impl Registers {
     }
 }
 
-#[derive(Debug, strum::FromRepr, Copy, Clone)]
+#[derive(Debug, strum::FromRepr, Copy, Clone, strum::EnumIter)]
 #[repr(u8)]
 enum Register {
     V0 = 0x0,
@@ -126,48 +131,153 @@ enum Register {
 struct Timer(u8);
 
 impl Timer {
-    /// Returns true if it reached 0.
-    fn tick(&mut self) -> bool {
-        let ret = self.0 == 1;
+    fn tick(&mut self) {
         self.0 = self.0.saturating_sub(1);
-        ret
+    }
+
+    fn get(&self) -> u8 {
+        self.0
+    }
+
+    fn set(&mut self, val: u8) {
+        self.0 = val
     }
 }
 
 #[derive(Debug)]
+enum Cond {
+    /// VX equals NN
+    Eq(Register, u8),
+    /// VX does not equal NN
+    Neq(Register, u8),
+    /// VX equals VY
+    EqReg(Register, Register),
+    /// VX does not equal VY
+    NeqReg(Register, Register),
+}
+
+#[derive(Debug)]
 enum Instruction {
-    ClearScreen,
-    Jump(u16),
-    SetRegister(Register, u8),
+    /// Adds NN to VX (carry flag is not changed).
     Add(Register, u8),
-    SetIndex(u16),
+    /// Adds VX to I. VF is not affected.
+    AddIndex(Register),
+    /// Adds VY to VX. VF is set to 1 when there's an overflow, and to 0 when there is not.
+    AddReg(Register, Register),
+    /// Sets VX to VX and VY. (bitwise AND operation).
+    And(Register, Register),
+    /// Sets VX to the value of VY.
+    Assign(Register, Register),
+    /// Stores the binary-coded decimal representation of VX,
+    /// with the hundreds digit in memory at location in I,
+    /// the tens digit at location I+1, and the ones digit at location I+2
+    BinaryDecimalConversion(Register),
+    /// Calls machine code routine at address NNN.
+    Call(u16),
+    /// Calls subroutine at NNN.
+    CallSubroutine(u16),
+    /// Clears the screen.
+    DisplayClear,
+    /// Skips the next instruction if Cond
+    CondSkip(Cond),
+    /// Draws a sprite at coordinate (VX, VY)
     Display(Register, Register, u8),
+    /// Sets I to the location of the sprite for the character in VX(only consider the lowest nibble).
+    /// Characters 0-F (in hexadecimal) are represented by a 4x5 font.
+    FontCharacter(Register),
+    /// Sets VX to the value of the delay timer.
+    GetDelay(Register),
+    /// A key press is awaited, and then stored in VX
+    /// (blocking operation, all instruction halted until next key event, delay and sound timers should continue processing)
+    GetKey(Register),
+    /// Jumps to address NNN.
+    Jump(u16),
+    /// Jumps to the address NNN plus V0.
+    JumpOffset(u16),
+    /// Fills from V0 to VX (including VX) with values from memory, starting at address I. The offset from I is increased by 1 for each value read, but I itself is left unmodified.
+    LoadMemory(Register),
+    /// Sets VX to VX or VY. (bitwise OR operation).
+    Or(Register, Register),
+    /// Sets VX to the result of a bitwise and
+    /// operation on a random number (Typically: 0 to 255) and NN.
+    Rand(Register, u8),
+    /// Returns from a subroutine.
+    Return,
+    /// Sets the delay timer to VX.
+    SetDelay(Register),
+    /// Sets I to the address NNN.
+    SetIndex(u16),
+    /// Sets VX to NN
+    SetRegister(Register, u8),
+    /// Sets the sound timer to VX.
+    SetSound(Register),
+    /// Sets VX to VY minus VX.
+    /// VF is set to 0 when there's an underflow,
+    /// and 1 when there is not.
+    /// (i.e. VF set to 1 if VY >= VX).
+    /// Shifts VX to the left by 1, then sets VF to 1 if the most significant bit of VX prior to that shift was set, or to 0 if it was unset.
+    ShiftLeft(Register, Register),
+    /// Shifts VX to the right by 1,
+    /// then stores the least significant bit of VX prior to the shift into VF
+    ShiftRight(Register, Register),
+    /// Skips the next instruction if the key stored in VX(only consider the lowest nibble) is pressed
+    SkipIfKey(Register),
+    /// Skips the next instruction if the key stored in VX(only consider the lowest nibble) is not pressed
+    SkipIfNotKey(Register),
+    /// Stores from V0 to VX (including VX) in memory, starting at address I. The offset from I is increased by 1 for each value written, but I itself is left unmodified
+    StoreMemory(Register),
+    /// Complex
+    Subtract(Register, Register),
+    /// Sets VX to VX xor VY
+    Xor(Register, Register),
 }
 
 impl Instruction {
     fn decode(opcode: u16) -> Self {
         use Instruction::*;
-        match opcode {
-            0x00E0 => return ClearScreen,
-            _ => (),
-        }
         let nib1 = (opcode >> 12) as u8;
         let nib2 = (opcode >> 8) as u8 & 0xF;
-        let register = Register::from_repr(nib2).unwrap();
         let addr = opcode & 0x0FFF;
-        let x = &register;
+        let x = Register::from_repr(nib2).unwrap();
         let y = Register::from_repr((opcode as u8) >> 4).unwrap();
-        let n = opcode as u8 & 0xF;
+        let nn = opcode as u8;
+        let n = nn & 0xF;
         match nib1 {
+            0x0 if opcode == 0x00E0 => DisplayClear,
+            0x0 if opcode == 0x00EE => Return,
+            0x0 => Call(addr),
             0x1 => Jump(opcode & 0x0FFF),
-            // 6XNN (set register VX)
-            0x6 => SetRegister(register, opcode as u8),
-            // 7XNN (add value to register VX)
-            0x7 => Add(register, opcode as u8),
-            // ANNN (set index register I)
+            0x2 => CallSubroutine(addr),
+            0x3 => CondSkip(Cond::Eq(x, nn)),
+            0x4 => CondSkip(Cond::Neq(x, nn)),
+            0x5 if n == 0x0 => CondSkip(Cond::EqReg(x, y)),
+            0x6 => SetRegister(x, opcode as u8),
+            0x7 => Add(x, opcode as u8),
+            0x8 if n == 0x0 => Assign(x, y),
+            0x8 if n == 0x1 => Or(x, y),
+            0x8 if n == 0x2 => And(x, y),
+            0x8 if n == 0x3 => Xor(x, y),
+            0x8 if n == 0x4 => AddReg(x, y),
+            0x8 if n == 0x5 => Subtract(x, y),
+            0x8 if n == 0x6 => ShiftRight(x, y),
+            0x8 if n == 0x7 => Subtract(y, x),
+            0x8 if n == 0xe => ShiftLeft(x, y),
+            0x9 if n == 0x0 => CondSkip(Cond::NeqReg(x, y)),
             0xA => SetIndex(addr),
-            // DXYN (display/draw)
-            0xD => Display(*x, y, n),
+            0xB => JumpOffset(addr),
+            0xC => Rand(x, nn),
+            0xD => Display(x, y, n),
+            0xE if nn == 0x9E => SkipIfKey(x),
+            0xE if nn == 0xA1 => SkipIfNotKey(x),
+            0xF if nn == 0x07 => GetDelay(x),
+            0xF if nn == 0x0A => GetKey(x),
+            0xF if nn == 0x15 => SetDelay(x),
+            0xF if nn == 0x18 => SetSound(x),
+            0xF if nn == 0x1E => AddIndex(x),
+            0xF if nn == 0x29 => FontCharacter(x),
+            0xF if nn == 0x33 => BinaryDecimalConversion(x),
+            0xF if nn == 0x55 => StoreMemory(x),
+            0xF if nn == 0x65 => LoadMemory(x),
             b => todo!("Unknown opcode: 0x{:04x}", b),
         }
     }
@@ -179,13 +289,29 @@ impl CPU {
         (self.memory.0[pc] as u16) << 8 | self.memory.0[pc + 1] as u16
     }
 
+    fn push(&mut self, addr: u16) {
+        self.memory.set(self.sp, (addr >> 8) as u8);
+        self.memory.set(self.sp + 1, addr as u8);
+        self.sp += 2;
+    }
+
+    fn pop(&mut self) -> u16 {
+        self.sp -= 2;
+        let hi = self.memory.get(self.sp);
+        let lo = self.memory.get(self.sp + 1);
+        (hi as u16) << 8 | lo as u16
+    }
+
     fn execute(&mut self, instruction: Instruction) -> u16 {
         match instruction {
-            Instruction::ClearScreen => self.screen = Screen::default(),
-
+            Instruction::DisplayClear => self.screen = Screen::default(),
+            Instruction::CallSubroutine(addr) => {
+                self.push(self.pc);
+                return addr;
+            }
+            Instruction::Return => return self.pop(),
             Instruction::Jump(addr) => return addr,
             Instruction::SetRegister(register, val) => self.registers.set(register, val),
-
             Instruction::Add(register, val) => *self.registers.get_mut(register) += val,
             Instruction::SetIndex(val) => self.index = val,
             Instruction::Display(x, y, height) => {
@@ -209,6 +335,39 @@ impl CPU {
                     }
                 }
             }
+            Instruction::AddIndex(register) => todo!(),
+            Instruction::AddReg(register, register1) => todo!(),
+            Instruction::And(register, register1) => todo!(),
+            Instruction::BinaryDecimalConversion(register) => todo!(),
+            Instruction::CondSkip(cond) => todo!(),
+            Instruction::FontCharacter(register) => todo!(),
+            Instruction::GetDelay(register) => todo!(),
+            Instruction::GetKey(register) => todo!(),
+            Instruction::JumpOffset(_) => todo!(),
+            Instruction::LoadMemory(register) => {
+                for (i, register) in Register::iter().enumerate() {
+                    self.registers
+                        .set(register, self.memory.get(self.index + i as u16));
+                }
+            }
+            Instruction::Or(register, register1) => todo!(),
+            Instruction::Rand(register, _) => todo!(),
+            Instruction::Assign(register, register1) => todo!(),
+            Instruction::SetDelay(register) => self.delay_timer.set(self.registers.get(register)),
+            Instruction::SetSound(register) => self.sound_timer.set(self.registers.get(register)),
+            Instruction::ShiftLeft(register, register1) => todo!(),
+            Instruction::ShiftRight(register, register1) => todo!(),
+            Instruction::SkipIfKey(register) => todo!(),
+            Instruction::SkipIfNotKey(register) => todo!(),
+            Instruction::StoreMemory(register) => {
+                for (i, register) in Register::iter().enumerate() {
+                    self.memory
+                        .set(self.index + i as u16, self.registers.get(register));
+                }
+            }
+            Instruction::Subtract(register, register1) => todo!(),
+            Instruction::Xor(register, register1) => todo!(),
+            Instruction::Call(_) => todo!(),
         }
         self.pc + 2
     }
@@ -220,8 +379,7 @@ impl CPU {
     }
 
     /// The caller should tick the timers at a 60hz frequency.
-    /// Returns true if it beeps.
-    pub fn tick_timers(&mut self) -> bool {
+    pub fn tick_timers(&mut self) {
         self.delay_timer.tick();
         self.sound_timer.tick()
     }
@@ -271,8 +429,9 @@ impl Emulator {
     fn tick(&mut self) -> Option<EmulatorState> {
         self.cpu.tick();
         if self.frame_counter.tick() {
+            self.cpu.tick_timers();
             return Some(EmulatorState {
-                beep: self.cpu.tick_timers(),
+                beep: self.cpu.is_beep(),
                 screen: self.cpu.screen(),
             });
         }
@@ -289,7 +448,7 @@ struct DebuggerApp {
     rx: Receiver<EmulatorState>,
     screen: Screen,
     display_texture: egui::TextureHandle,
-    stream: OutputStream,
+    _stream: OutputStream,
     sink: Sink,
 }
 
@@ -345,7 +504,7 @@ impl DebuggerApp {
             rx,
             screen: Screen::default(),
             display_texture,
-            stream,
+            _stream: stream,
             sink,
         }
     }
