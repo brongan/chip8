@@ -181,19 +181,13 @@ impl CPU {
 
     fn execute(&mut self, instruction: Instruction) -> u16 {
         match instruction {
-            Instruction::ClearScreen => {
-                self.screen = Screen::default();
-            }
+            Instruction::ClearScreen => self.screen = Screen::default(),
+
             Instruction::Jump(addr) => return addr,
-            Instruction::SetRegister(register, val) => {
-                self.registers.set(register, val);
-            }
-            Instruction::Add(register, val) => {
-                *self.registers.get_mut(register) += val;
-            }
-            Instruction::SetIndex(val) => {
-                self.index = val;
-            }
+            Instruction::SetRegister(register, val) => self.registers.set(register, val),
+
+            Instruction::Add(register, val) => *self.registers.get_mut(register) += val,
+            Instruction::SetIndex(val) => self.index = val,
             Instruction::Display(x, y, height) => {
                 let vx = self.registers.get(x);
                 let vy = self.registers.get(y);
