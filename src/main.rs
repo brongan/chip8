@@ -183,20 +183,16 @@ impl CPU {
         match instruction {
             Instruction::ClearScreen => {
                 self.screen = Screen::default();
-                self.pc + 2
             }
-            Instruction::Jump(addr) => addr,
+            Instruction::Jump(addr) => return addr,
             Instruction::SetRegister(register, val) => {
                 self.registers.set(register, val);
-                self.pc + 2
             }
             Instruction::Add(register, val) => {
                 *self.registers.get_mut(register) += val;
-                self.pc + 2
             }
             Instruction::SetIndex(val) => {
                 self.index = val;
-                self.pc + 2
             }
             Instruction::Display(x, y, height) => {
                 let vx = self.registers.get(x);
@@ -218,10 +214,9 @@ impl CPU {
                         }
                     }
                 }
-
-                self.pc + 2
             }
         }
+        self.pc + 2
     }
 
     pub fn tick(&mut self) {
