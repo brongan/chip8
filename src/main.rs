@@ -1,12 +1,12 @@
+use eframe::egui::{self, Key, Vec2};
+use rand::prelude::*;
+use rodio::{OutputStream, Sink, Source};
+use spin_sleep::sleep;
 use std::{
     sync::mpsc::{Receiver, SyncSender},
     thread,
     time::{Duration, Instant},
 };
-
-use eframe::egui::{self, Key, Vec2};
-use rodio::{OutputStream, Sink, Source};
-use spin_sleep::sleep;
 
 #[derive(Default, Debug)]
 struct CPU {
@@ -215,11 +215,8 @@ enum Instruction {
     SetRegister(Register, u8),
     /// Sets the sound timer to VX.
     SetSound(Register),
-    /// Sets VX to VY minus VX.
-    /// VF is set to 0 when there's an underflow,
-    /// and 1 when there is not.
-    /// (i.e. VF set to 1 if VY >= VX).
-    /// Shifts VX to the left by 1, then sets VF to 1 if the most significant bit of VX prior to that shift was set, or to 0 if it was unset.
+    /// Shifts VX to the left by 1, then sets VF to 1 if the most significant bit
+    /// of VX prior to that shift was set, or to 0 if it was unset.
     ShiftLeft(Register, Register),
     /// Shifts VX to the right by 1,
     /// then stores the least significant bit of VX prior to the shift into VF
@@ -230,8 +227,10 @@ enum Instruction {
     SkipIfNotKey(Register),
     /// Stores from V0 to VX (including VX) in memory, starting at address I. The offset from I is increased by 1 for each value written, but I itself is left unmodified
     StoreMemory(Register),
-    /// Complex
+    /// VY is subtracted from VX. VF is set to 0 when there's an underflow, and 1 when there is not. (i.e. VF set to 1 if VX >= VY and 0 if not).
     Subtract(Register, Register),
+    /// Sets VX to VY minus VX. VF is set to 0 when there's an underflow, and 1 when there is not. (i.e. VF set to 1 if VY >= VX).
+    SubtractOther(Register, Register),
     /// Sets VX to VX xor VY
     Xor(Register, Register),
 }
@@ -264,7 +263,7 @@ impl Instruction {
             0x8 if n == 0x4 => AddReg(x, y),
             0x8 if n == 0x5 => Subtract(x, y),
             0x8 if n == 0x6 => ShiftRight(x, y),
-            0x8 if n == 0x7 => Subtract(y, x),
+            0x8 if n == 0x7 => SubtractOther(x, y),
             0x8 if n == 0xe => ShiftLeft(x, y),
             0x9 if n == 0x0 => CondSkip(Cond::NeqReg(x, y)),
             0xA => SetIndex(addr),
@@ -331,25 +330,43 @@ impl CPU {
     fn execute(&mut self, instruction: Instruction) -> u16 {
         use Instruction::*;
         match instruction {
-            Add(register, val) => *self.registers.get_mut(register) += val,
-            AddIndex(register) => todo!(),
-            AddReg(register, register1) => todo!(),
-            And(register, register1) => todo!(),
-            Assign(register, register1) => todo!(),
-            BinaryDecimalConversion(register) => todo!(),
-            Call(_) => todo!(),
+            Add(vx, val) => {
+                *self.registers.get_mut(vx) = self.registers.get(vx).wrapping_add(val);
+            }
+            AddIndex(vx) => self.index = self.index.wrapping_add(self.registers.get(vx) as u16),
+            AddReg(vx, vy) => {
+                let vy = self.registers.get(vy);
+                let vx = self.registers.get_mut(vx);
+                let (val, overflow) = vx.overflowing_add(vy);
+                *vx = val;
+                self.registers.set(Register::VF, overflow as u8);
+            }
+            And(vx, vy) => *self.registers.get_mut(vx) &= self.registers.get(vy),
+            Assign(vx, vy) => self.registers.set(vx, self.registers.get(vy)),
+            BinaryDecimalConversion(vy) => todo!(),
+            Call(_) => (),
             CallSubroutine(addr) => {
                 self.push(self.pc);
                 return addr;
             }
-            CondSkip(cond) => todo!(),
+            CondSkip(cond) => {
+                let cond = match cond {
+                    Cond::Eq(vx, nn) => self.registers.get(vx) == nn,
+                    Cond::Neq(vx, nn) => self.registers.get(vx) != nn,
+                    Cond::EqReg(vx, vy) => self.registers.get(vx) == self.registers.get(vy),
+                    Cond::NeqReg(vx, vy) => self.registers.get(vx) != self.registers.get(vy),
+                };
+                if cond {
+                    return self.pc + 4;
+                }
+            }
             Display(x, y, height) => self.display(x, y, height),
             DisplayClear => self.screen = Screen::default(),
-            FontCharacter(register) => todo!(),
-            GetDelay(register) => todo!(),
-            GetKey(register) => todo!(),
+            FontCharacter(vx) => todo!(),
+            GetDelay(vx) => self.registers.set(vx, self.delay_timer.0),
+            GetKey(vx) => todo!(),
             Jump(addr) => return addr,
-            JumpOffset(_) => todo!(),
+            JumpOffset(addr) => return addr.wrapping_add(self.registers.get(Register::V0) as u16),
             LoadMemory(x) => {
                 let x = x as u8;
                 for i in 0..=x {
@@ -358,17 +375,33 @@ impl CPU {
                         .set(register, self.memory.get(self.index + i as u16));
                 }
             }
-            Or(register, register1) => todo!(),
-            Rand(register, _) => todo!(),
+            Or(vx, vy) => *self.registers.get_mut(vx) |= self.registers.get(vy),
+            Rand(vx, nn) => self.registers.set(vx, rand::rng().random::<u8>() & nn),
             Return => return self.pop(),
-            SetDelay(register) => self.delay_timer.set(self.registers.get(register)),
+            SetDelay(vx) => self.delay_timer.set(self.registers.get(vx)),
             SetIndex(val) => self.index = val,
-            SetRegister(register, val) => self.registers.set(register, val),
-            SetSound(register) => self.sound_timer.set(self.registers.get(register)),
-            ShiftLeft(register, register1) => todo!(),
-            ShiftRight(register, register1) => todo!(),
-            SkipIfKey(register) => todo!(),
-            SkipIfNotKey(register) => todo!(),
+            SetRegister(vx, val) => self.registers.set(vx, val),
+            SetSound(vx) => self.sound_timer.set(self.registers.get(vx)),
+            ShiftLeft(vx, _vy) => {
+                let (val, overflow) = self.registers.get(vx).overflowing_mul(2);
+                self.registers.set(vx, val);
+                self.registers.set(Register::VF, overflow as u8);
+            }
+            ShiftRight(vx, vy) => {
+                let val = self.registers.get(vx);
+                self.registers.set(Register::VF, val & 0b1);
+                self.registers.set(vx, val >> 1);
+            }
+            SkipIfKey(vx) => {
+                if self.keypad[(self.registers.get(vx) & 0xF) as usize] {
+                    return self.pc + 4;
+                }
+            }
+            SkipIfNotKey(vx) => {
+                if !self.keypad[(self.registers.get(vx) & 0xF) as usize] {
+                    return self.pc + 4;
+                }
+            }
             StoreMemory(x) => {
                 let x = x as u8;
                 for i in 0..=x {
@@ -377,8 +410,9 @@ impl CPU {
                         .set(self.index + i as u16, self.registers.get(register));
                 }
             }
-            Subtract(register, register1) => todo!(),
-            Xor(register, register1) => todo!(),
+            Subtract(vx, vy) => todo!(),
+            SubtractOther(vx, vy) => todo!(),
+            Xor(vx, vy) => *self.registers.get_mut(vx) ^= self.registers.get(vy),
         }
         self.pc + 2
     }
