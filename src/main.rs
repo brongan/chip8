@@ -551,7 +551,7 @@ impl DebuggerApp {
     }
 
     /// Check for and map CHIP-8 key presses
-    fn check_keyboard(&self, ctx: &egui::Context) -> [bool; 16] {
+    fn check_keyboard(&self, ctx: &egui::Context) -> Keypad {
         let mut keypad = [false; 16];
         ctx.input(|i| {
             // Map 1, 2, 3, 4 -> 1, 2, 3, C
@@ -591,6 +591,7 @@ impl eframe::App for DebuggerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
             self.render_content(ui);
+            self.ui_tx.send(self.check_keyboard(ctx)).unwrap();
         });
     }
 }
