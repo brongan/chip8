@@ -282,7 +282,7 @@ impl Instruction {
             0xF if nn == 0x33 => BinaryDecimalConversion(x),
             0xF if nn == 0x55 => StoreMemory(x),
             0xF if nn == 0x65 => LoadMemory(x),
-            _ => todo!("Unknown opcode: 0x{:04x}", opcode),
+            _ => panic!("Unknown opcode: 0x{:04x}", opcode),
         }
     }
 }
@@ -306,49 +306,51 @@ impl CPU {
         (hi as u16) << 8 | lo as u16
     }
 
-    fn execute(&mut self, instruction: Instruction) -> u16 {
-        match instruction {
-            Instruction::DisplayClear => self.screen = Screen::default(),
-            Instruction::CallSubroutine(addr) => {
-                self.push(self.pc);
-                return addr;
-            }
-            Instruction::Return => return self.pop(),
-            Instruction::Jump(addr) => return addr,
-            Instruction::SetRegister(register, val) => self.registers.set(register, val),
-            Instruction::Add(register, val) => *self.registers.get_mut(register) += val,
-            Instruction::SetIndex(val) => self.index = val,
-            Instruction::Display(x, y, height) => {
-                let vx = self.registers.get(x);
-                let vy = self.registers.get(y);
-                let x = vx % 64;
-                let y = vy % 32;
-                let vf = self.registers.get_mut(Register::VF);
-                *vf = 0;
-                for (j, y) in (y..std::cmp::min(32, y + height)).enumerate() {
-                    let row = self.memory.get(self.index + j as u16);
-                    for (i, x) in (x..std::cmp::min(64, x + 8)).enumerate() {
-                        if row & (0b1 << (7 - i)) > 0 {
-                            if self.screen.0[y as usize][x as usize] {
-                                self.screen.0[y as usize][x as usize] = false;
-                                *vf = 1;
-                            } else {
-                                self.screen.0[y as usize][x as usize] = true;
-                            }
-                        }
+    fn display(&mut self, x: Register, y: Register, height: u8) {
+        let vx = self.registers.get(x);
+        let vy = self.registers.get(y);
+        let x = vx % 64;
+        let y = vy % 32;
+        let vf = self.registers.get_mut(Register::VF);
+        *vf = 0;
+        for (j, y) in (y..std::cmp::min(32, y + height)).enumerate() {
+            let row = self.memory.get(self.index + j as u16);
+            for (i, x) in (x..std::cmp::min(64, x + 8)).enumerate() {
+                if row & (0b1 << (7 - i)) > 0 {
+                    if self.screen.0[y as usize][x as usize] {
+                        self.screen.0[y as usize][x as usize] = false;
+                        *vf = 1;
+                    } else {
+                        self.screen.0[y as usize][x as usize] = true;
                     }
                 }
             }
-            Instruction::AddIndex(register) => todo!(),
-            Instruction::AddReg(register, register1) => todo!(),
-            Instruction::And(register, register1) => todo!(),
-            Instruction::BinaryDecimalConversion(register) => todo!(),
-            Instruction::CondSkip(cond) => todo!(),
-            Instruction::FontCharacter(register) => todo!(),
-            Instruction::GetDelay(register) => todo!(),
-            Instruction::GetKey(register) => todo!(),
-            Instruction::JumpOffset(_) => todo!(),
-            Instruction::LoadMemory(x) => {
+        }
+    }
+
+    fn execute(&mut self, instruction: Instruction) -> u16 {
+        use Instruction::*;
+        match instruction {
+            Add(register, val) => *self.registers.get_mut(register) += val,
+            AddIndex(register) => todo!(),
+            AddReg(register, register1) => todo!(),
+            And(register, register1) => todo!(),
+            Assign(register, register1) => todo!(),
+            BinaryDecimalConversion(register) => todo!(),
+            Call(_) => todo!(),
+            CallSubroutine(addr) => {
+                self.push(self.pc);
+                return addr;
+            }
+            CondSkip(cond) => todo!(),
+            Display(x, y, height) => self.display(x, y, height),
+            DisplayClear => self.screen = Screen::default(),
+            FontCharacter(register) => todo!(),
+            GetDelay(register) => todo!(),
+            GetKey(register) => todo!(),
+            Jump(addr) => return addr,
+            JumpOffset(_) => todo!(),
+            LoadMemory(x) => {
                 let x = x as u8;
                 for i in 0..=x {
                     let register = Register::from_repr(i).unwrap();
@@ -356,16 +358,18 @@ impl CPU {
                         .set(register, self.memory.get(self.index + i as u16));
                 }
             }
-            Instruction::Or(register, register1) => todo!(),
-            Instruction::Rand(register, _) => todo!(),
-            Instruction::Assign(register, register1) => todo!(),
-            Instruction::SetDelay(register) => self.delay_timer.set(self.registers.get(register)),
-            Instruction::SetSound(register) => self.sound_timer.set(self.registers.get(register)),
-            Instruction::ShiftLeft(register, register1) => todo!(),
-            Instruction::ShiftRight(register, register1) => todo!(),
-            Instruction::SkipIfKey(register) => todo!(),
-            Instruction::SkipIfNotKey(register) => todo!(),
-            Instruction::StoreMemory(x) => {
+            Or(register, register1) => todo!(),
+            Rand(register, _) => todo!(),
+            Return => return self.pop(),
+            SetDelay(register) => self.delay_timer.set(self.registers.get(register)),
+            SetIndex(val) => self.index = val,
+            SetRegister(register, val) => self.registers.set(register, val),
+            SetSound(register) => self.sound_timer.set(self.registers.get(register)),
+            ShiftLeft(register, register1) => todo!(),
+            ShiftRight(register, register1) => todo!(),
+            SkipIfKey(register) => todo!(),
+            SkipIfNotKey(register) => todo!(),
+            StoreMemory(x) => {
                 let x = x as u8;
                 for i in 0..=x {
                     let register = Register::from_repr(i).unwrap();
@@ -373,9 +377,8 @@ impl CPU {
                         .set(self.index + i as u16, self.registers.get(register));
                 }
             }
-            Instruction::Subtract(register, register1) => todo!(),
-            Instruction::Xor(register, register1) => todo!(),
-            Instruction::Call(_) => todo!(),
+            Subtract(register, register1) => todo!(),
+            Xor(register, register1) => todo!(),
         }
         self.pc + 2
     }
