@@ -343,7 +343,15 @@ impl CPU {
             }
             And(vx, vy) => *self.registers.get_mut(vx) &= self.registers.get(vy),
             Assign(vx, vy) => self.registers.set(vx, self.registers.get(vy)),
-            BinaryDecimalConversion(vy) => todo!(),
+            BinaryDecimalConversion(vx) => {
+                let val = self.registers.get(vx);
+                let hundreds = val / 100;
+                let tens = val % 100;
+                let ones = val % 10;
+                self.memory.set(self.index, hundreds);
+                self.memory.set(self.index + 1, tens);
+                self.memory.set(self.index + 2, ones);
+            }
             Call(_addr) => (),
             CallSubroutine(addr) => {
                 self.push(self.pc);
@@ -362,7 +370,7 @@ impl CPU {
             }
             Display(x, y, height) => self.display(x, y, height),
             DisplayClear => self.screen = Screen::default(),
-            FontCharacter(vx) => todo!(),
+            FontCharacter(vx) => self.index = 0x50 + 5 * (self.registers.get(vx) & 0xF) as u16,
             GetDelay(vx) => self.registers.set(vx, self.delay_timer.0),
             GetKey(vx) => todo!(),
             Jump(addr) => return addr,
