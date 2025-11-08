@@ -344,7 +344,7 @@ impl CPU {
             And(vx, vy) => *self.registers.get_mut(vx) &= self.registers.get(vy),
             Assign(vx, vy) => self.registers.set(vx, self.registers.get(vy)),
             BinaryDecimalConversion(vy) => todo!(),
-            Call(_) => (),
+            Call(_addr) => (),
             CallSubroutine(addr) => {
                 self.push(self.pc);
                 return addr;
@@ -410,8 +410,20 @@ impl CPU {
                         .set(self.index + i as u16, self.registers.get(register));
                 }
             }
-            Subtract(vx, vy) => todo!(),
-            SubtractOther(vx, vy) => todo!(),
+            Subtract(vx, vy) => {
+                let vx_val = self.registers.get(vx);
+                let vy_val = self.registers.get(vy);
+                let (val, underflow) = vx_val.overflowing_sub(vy_val);
+                self.registers.set(vx, val);
+                self.registers.set(Register::VF, !underflow as u8);
+            }
+            SubtractOther(vx, vy) => {
+                let vx_val = self.registers.get(vx);
+                let vy_val = self.registers.get(vy);
+                let (val, underflow) = vy_val.overflowing_sub(vx_val);
+                self.registers.set(vx, val);
+                self.registers.set(Register::VF, !underflow as u8);
+            }
             Xor(vx, vy) => *self.registers.get_mut(vx) ^= self.registers.get(vy),
         }
         self.pc + 2
