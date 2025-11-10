@@ -2,11 +2,12 @@ use eframe::egui::{self, Key, Vec2};
 use rand::prelude::*;
 use rodio::{OutputStream, Sink, Source};
 use spin_sleep::sleep;
-use std::{
-    sync::mpsc::{Receiver, SyncSender},
-    thread,
-    time::{Duration, Instant},
-};
+use std::sync::Arc;
+use std::sync::atomic::AtomicU16;
+use std::sync::atomic::Ordering::Relaxed;
+use std::sync::mpsc::Receiver;
+use std::thread;
+use std::time::{Duration, Instant};
 
 #[derive(Default, Debug)]
 struct CPU {
@@ -22,7 +23,7 @@ struct CPU {
 }
 
 impl CPU {
-    fn new(rom: Vec<u8>) -> Self {
+    fn new(rom: Vec<u8>, keypad: Keypad) -> Self {
         let font = [
             0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
             0x20, 0x60, 0x20, 0x20, 0x70, // 1
@@ -48,16 +49,13 @@ impl CPU {
         Self {
             memory,
             pc: 0x200,
+            keypad,
             ..Default::default()
         }
     }
 
     fn is_beep(&self) -> bool {
         self.sound_timer.get() > 0
-    }
-
-    fn set_keypad(&mut self, keypad: Keypad) {
-        self.keypad = keypad;
     }
 }
 
@@ -388,12 +386,14 @@ impl CPU {
                 self.registers.set(Register::VF, val & 0b1);
             }
             SkipIfKey(vx) => {
-                if self.keypad[(self.registers.get(vx) & 0xF) as usize] {
+                let key_index = self.registers.get(vx) & 0xF;
+                if self.keypad.is_pressed(key_index) {
                     return self.pc + 4;
                 }
             }
             SkipIfNotKey(vx) => {
-                if !self.keypad[(self.registers.get(vx) & 0xF) as usize] {
+                let key_index = self.registers.get(vx) & 0xF;
+                if !self.keypad.is_pressed(key_index) {
                     return self.pc + 4;
                 }
             }
@@ -471,15 +471,11 @@ struct Emulator {
 }
 
 impl Emulator {
-    fn new(rom: Vec<u8>) -> Self {
+    fn new(rom: Vec<u8>, keypad: Keypad) -> Self {
         Self {
-            cpu: CPU::new(rom),
+            cpu: CPU::new(rom, keypad),
             frame_counter: FrameCounter::default(),
         }
-    }
-
-    fn set_keypad(&mut self, keypad: Keypad) {
-        self.cpu.set_keypad(keypad);
     }
 
     fn tick(&mut self) -> Option<EmulatorState> {
@@ -500,15 +496,22 @@ struct EmulatorState {
     screen: Screen,
 }
 
-type Keypad = [bool; 16];
+#[derive(Default, Debug, Clone)]
+struct Keypad(pub Arc<AtomicU16>);
 
-struct GuiControls {
-    keypad: Keypad,
+impl Keypad {
+    pub fn is_pressed(&self, key_index: u8) -> bool {
+        if key_index > 15 {
+            return false; // Or panic!("Key index out of bounds")
+        }
+        let keypad_state = self.0.load(Relaxed);
+        (keypad_state >> key_index) & 1 == 1
+    }
 }
 
 struct DebuggerApp {
     state_rx: Receiver<EmulatorState>,
-    ui_tx: SyncSender<Keypad>,
+    keypad: Keypad,
     screen: Screen,
     display_texture: egui::TextureHandle,
     _stream: OutputStream,
@@ -533,19 +536,17 @@ fn render_screen(screen: &Screen) -> egui::ColorImage {
 impl DebuggerApp {
     fn new(cc: &eframe::CreationContext, rom: Vec<u8>) -> Self {
         let (state_tx, state_rx) = std::sync::mpsc::sync_channel(1);
-        let (ui_tx, ui_rx) = std::sync::mpsc::sync_channel(1);
+        let keypad = Keypad::default();
         let ctx = cc.egui_ctx.clone();
-        let mut emulator = Emulator::new(rom);
+        let mut emulator = Emulator::new(rom, keypad.clone());
         thread::spawn(move || {
             loop {
                 let start = Instant::now();
                 let ips = 700;
                 let instruction_time = Duration::from_secs_f64(1.0 / ips as f64);
-                if let Ok(keypad) = ui_rx.try_recv() {
-                    emulator.set_keypad(keypad);
-                }
                 if let Some(state) = emulator.tick() {
                     if state_tx.send(state).is_err() {
+                        eprintln!("UI closed channel.");
                         break;
                     }
                     ctx.request_repaint();
@@ -572,7 +573,7 @@ impl DebuggerApp {
 
         Self {
             state_rx,
-            ui_tx,
+            keypad,
             screen: Screen::default(),
             display_texture,
             _stream: stream,
@@ -592,31 +593,34 @@ impl DebuggerApp {
     }
 
     /// Check for and map CHIP-8 key presses
-    fn check_keyboard(&self, ctx: &egui::Context) -> Keypad {
-        let mut keypad = [false; 16];
+    fn check_keyboard(ctx: &egui::Context) -> u16 {
+        const KEY_MAP: &[(Key, u16)] = &[
+            (Key::Num1, 1 << 0x1),
+            (Key::Num2, 1 << 0x2),
+            (Key::Num3, 1 << 0x3),
+            (Key::Num4, 1 << 0xC),
+            (Key::Q, 1 << 0x4),
+            (Key::W, 1 << 0x5),
+            (Key::E, 1 << 0x6),
+            (Key::R, 1 << 0xD),
+            (Key::A, 1 << 0x7),
+            (Key::S, 1 << 0x8),
+            (Key::D, 1 << 0x9),
+            (Key::F, 1 << 0xE),
+            (Key::Z, 1 << 0xA),
+            (Key::X, 1 << 0x0),
+            (Key::C, 1 << 0xB),
+            (Key::V, 1 << 0xF),
+        ];
+
         ctx.input(|i| {
-            // Map 1, 2, 3, 4 -> 1, 2, 3, C
-            keypad[0x1] = i.key_down(Key::Num1);
-            keypad[0x2] = i.key_down(Key::Num2);
-            keypad[0x3] = i.key_down(Key::Num3);
-            keypad[0xC] = i.key_down(Key::Num4);
-            // Map Q, W, E, R -> 4, 5, 6, D
-            keypad[0x4] = i.key_down(Key::Q);
-            keypad[0x5] = i.key_down(Key::W);
-            keypad[0x6] = i.key_down(Key::E);
-            keypad[0xD] = i.key_down(Key::R);
-            // Map A, S, D, F -> 7, 8, 9, E
-            keypad[0x7] = i.key_down(Key::A);
-            keypad[0x8] = i.key_down(Key::S);
-            keypad[0x9] = i.key_down(Key::D);
-            keypad[0xE] = i.key_down(Key::F);
-            // Map Z, X, C, V -> A, 0, B, F
-            keypad[0xA] = i.key_down(Key::Z);
-            keypad[0x0] = i.key_down(Key::X);
-            keypad[0xB] = i.key_down(Key::C);
-            keypad[0xF] = i.key_down(Key::V);
-        });
-        keypad
+            KEY_MAP.iter().fold(0u16, |mut keypad, (key, mask)| {
+                if i.key_down(*key) {
+                    keypad |= mask;
+                }
+                keypad
+            })
+        })
     }
 
     fn render_content(&mut self, ui: &mut egui::Ui) {
@@ -632,7 +636,7 @@ impl eframe::App for DebuggerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
             self.render_content(ui);
-            self.ui_tx.send(self.check_keyboard(ctx)).unwrap();
+            self.keypad.0.store(Self::check_keyboard(ctx), Relaxed);
         });
     }
 }
