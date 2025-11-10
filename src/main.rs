@@ -384,8 +384,8 @@ impl CPU {
             }
             ShiftRight(vx, vy) => {
                 let val = self.registers.get(vx);
-                self.registers.set(Register::VF, val & 0b1);
                 self.registers.set(vx, val >> 1);
+                self.registers.set(Register::VF, val & 0b1);
             }
             SkipIfKey(vx) => {
                 if self.keypad[(self.registers.get(vx) & 0xF) as usize] {
