@@ -76,10 +76,6 @@ impl Memory {
     fn set(&mut self, addr: u16, val: u8) {
         self.0[addr as usize] = val
     }
-
-    fn get_mut(&mut self, addr: u16) -> &mut u8 {
-        &mut self.0[addr as usize]
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -380,7 +376,7 @@ impl CPU {
                 self.registers.set(vx, val);
                 self.registers.set(Register::VF, overflow as u8);
             }
-            ShiftRight(vx, vy) => {
+            ShiftRight(vx, _vy) => {
                 let val = self.registers.get(vx);
                 self.registers.set(vx, val >> 1);
                 self.registers.set(Register::VF, val & 0b1);
