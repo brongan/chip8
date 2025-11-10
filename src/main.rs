@@ -353,7 +353,16 @@ impl CPU {
             DisplayClear => self.screen = Screen::default(),
             FontCharacter(vx) => self.index = 0x50 + 5 * (self.registers.get(vx) & 0xF) as u16,
             GetDelay(vx) => self.registers.set(vx, self.delay_timer.0),
-            GetKey(vx) => todo!(),
+            GetKey(vx) => {
+                let keys = self.keypad.get_state();
+                for key in 0..16 {
+                    if keys & (0b1 << key) > 0 {
+                        self.registers.set(vx, key);
+                        return self.pc + 2;
+                    }
+                }
+                return self.pc;
+            }
             Jump(addr) => return addr,
             JumpOffset(addr) => return addr.wrapping_add(self.registers.get(Register::V0) as u16),
             LoadMemory(x) => {
@@ -500,8 +509,11 @@ impl Keypad {
         if key_index > 15 {
             return false; // Or panic!("Key index out of bounds")
         }
-        let keypad_state = self.0.load(Relaxed);
-        (keypad_state >> key_index) & 1 == 1
+        (self.get_state() >> key_index) & 1 == 1
+    }
+
+    pub fn get_state(&self) -> u16 {
+        self.0.load(Relaxed)
     }
 }
 
