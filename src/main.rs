@@ -333,7 +333,7 @@ impl CPU {
             BinaryDecimalConversion(vx) => {
                 let val = self.registers.get(vx);
                 let hundreds = val / 100;
-                let tens = val % 100;
+                let tens = (val / 10) % 10;
                 let ones = val % 10;
                 self.memory.set(self.index, hundreds);
                 self.memory.set(self.index + 1, tens);
