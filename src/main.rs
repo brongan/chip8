@@ -12,7 +12,7 @@ use std::{
 struct CPU {
     pc: u16,
     index: u16,
-    sp: u16,
+    stack: Vec<u16>,
     delay_timer: Timer,
     sound_timer: Timer,
     registers: Registers,
@@ -292,19 +292,6 @@ impl CPU {
         (self.memory.0[pc] as u16) << 8 | self.memory.0[pc + 1] as u16
     }
 
-    fn push(&mut self, addr: u16) {
-        self.memory.set(self.sp, (addr >> 8) as u8);
-        self.memory.set(self.sp + 1, addr as u8);
-        self.sp += 2;
-    }
-
-    fn pop(&mut self) -> u16 {
-        self.sp -= 2;
-        let hi = self.memory.get(self.sp);
-        let lo = self.memory.get(self.sp + 1);
-        (hi as u16) << 8 | lo as u16
-    }
-
     fn display(&mut self, x: Register, y: Register, height: u8) {
         let vx = self.registers.get(x);
         let vy = self.registers.get(y);
@@ -354,7 +341,7 @@ impl CPU {
             }
             Call(_addr) => (),
             CallSubroutine(addr) => {
-                self.push(self.pc);
+                self.stack.push(self.pc + 2);
                 return addr;
             }
             CondSkip(cond) => {
@@ -385,7 +372,7 @@ impl CPU {
             }
             Or(vx, vy) => *self.registers.get_mut(vx) |= self.registers.get(vy),
             Rand(vx, nn) => self.registers.set(vx, rand::rng().random::<u8>() & nn),
-            Return => return self.pop(),
+            Return => return self.stack.pop().unwrap(),
             SetDelay(vx) => self.delay_timer.set(self.registers.get(vx)),
             SetIndex(val) => self.index = val,
             SetRegister(vx, val) => self.registers.set(vx, val),
