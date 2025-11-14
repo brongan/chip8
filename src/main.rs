@@ -213,7 +213,7 @@ impl CPU {
     pub fn tick(&mut self) {
         let instruction = self.fetch();
         let instruction = Instruction::decode(instruction);
-        self.pc = self.execute(instruction);
+        self.pc = std::cmp::min(self.execute(instruction), self.memory.0.len() as u16 - 2);
     }
 
     /// The caller should tick the timers at a 60hz frequency.
