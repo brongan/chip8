@@ -25,7 +25,7 @@ struct CPU {
 }
 
 impl CPU {
-    fn new(rom: Vec<u8>, keypad: Keypad) -> Self {
+    fn new(rom: Option<Vec<u8>>, keypad: Keypad) -> Self {
         let font = [
             0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
             0x20, 0x60, 0x20, 0x20, 0x70, // 1
@@ -45,9 +45,11 @@ impl CPU {
             0xF0, 0x80, 0xF0, 0x80, 0x80, // F;
         ];
         let mut memory = Memory::default();
-        let len = std::cmp::min(rom.len(), memory.0.len() - 0x200);
         memory.0[0x50..=0x9f].copy_from_slice(&font);
-        memory.0[0x200..len + 0x200].copy_from_slice(&rom[0..len]);
+        if let Some(rom) = rom {
+            let len = std::cmp::min(rom.len(), memory.0.len() - 0x200);
+            memory.0[0x200..len + 0x200].copy_from_slice(&rom[0..len]);
+        }
         Self {
             memory,
             pc: 0x200,
@@ -445,14 +447,13 @@ impl Instruction {
 #[derive(Debug)]
 struct Emulator {
     cpu: CPU,
-    running: Arc<AtomicBool>,
     target_fps: Arc<AtomicU32>,
     cycle_accumulator: u32,
 }
 
 impl Emulator {
     fn load_rom(&mut self, rom: Vec<u8>) {
-        self.cpu = CPU::new(rom, self.cpu.keypad.clone())
+        self.cpu = CPU::new(Some(rom), self.cpu.keypad.clone())
     }
 
     fn tick(&mut self, target_ips: u32) -> Option<CPU> {
@@ -525,14 +526,14 @@ fn render_screen(screen: &Screen, on_color: Color32, off_color: Color32) -> egui
 }
 
 impl DebuggerApp {
-    fn new(cc: &eframe::CreationContext, rom: Vec<u8>) -> Self {
+    fn new(cc: &eframe::CreationContext, rom: Option<Vec<u8>>) -> Self {
         let (state_tx, state_rx) = std::sync::mpsc::sync_channel(1);
         let (rom_tx, rom_rx) = std::sync::mpsc::channel::<Vec<u8>>();
         let keypad = Keypad::default();
         let ctx = cc.egui_ctx.clone();
         ctx.set_visuals(egui::Visuals::dark());
 
-        let running = Arc::new(AtomicBool::new(true));
+        let running = Arc::new(AtomicBool::new(rom.is_some()));
         let target_ips = Arc::new(AtomicU32::new(700));
         let target_fps = Arc::new(AtomicU32::new(60));
         let instruction_counter: Arc<AtomicU64> = Arc::default();
@@ -540,7 +541,6 @@ impl DebuggerApp {
         let cpu = CPU::new(rom, keypad.clone());
         let mut emulator = Emulator {
             cpu: cpu.clone(),
-            running: running.clone(),
             target_fps: target_fps.clone(),
             cycle_accumulator: 0,
         };
@@ -551,6 +551,7 @@ impl DebuggerApp {
             loop {
                 if !running_clone.load(Relaxed) {
                     sleep(Duration::from_millis(250));
+                    continue;
                 }
 
                 if let Ok(new_rom) = rom_rx.try_recv() {
@@ -573,6 +574,7 @@ impl DebuggerApp {
                     }
                     ctx.request_repaint();
                 }
+
                 let elapsed = start.elapsed();
                 if elapsed < instruction_time {
                     sleep(instruction_time - elapsed);
@@ -919,9 +921,9 @@ impl eframe::App for DebuggerApp {
 }
 
 fn main() -> eframe::Result {
-    let rom = std::env::args().nth(1).map_or_else(Vec::new, |path| {
-        std::fs::read(path).expect("Failed to read ROM from path")
-    });
+    let rom = std::env::args()
+        .nth(1)
+        .map(|path| std::fs::read(path).expect("Failed to read ROM from path"));
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size(egui::Vec2::new(1920.0, 1080.0))
