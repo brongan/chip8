@@ -1,4 +1,6 @@
-use eframe::egui::{self, Key, Vec2};
+use eframe::egui::{
+    self, Color32, Frame, Key, RichText, ScrollArea, SidePanel, TextStyle, TopBottomPanel, Vec2,
+};
 use rand::prelude::*;
 use rodio::{OutputStream, Sink, Source};
 use spin_sleep::sleep;
@@ -8,6 +10,7 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::sync::mpsc::Receiver;
 use std::thread;
 use std::time::{Duration, Instant};
+use strum::IntoEnumIterator;
 
 #[derive(Default, Debug, Clone)]
 struct CPU {
@@ -56,6 +59,166 @@ impl CPU {
 
     fn is_beep(&self) -> bool {
         self.sound_timer.get() > 0
+    }
+
+    fn fetch(&self) -> u16 {
+        let pc = self.pc as usize;
+        (self.memory.0[pc] as u16) << 8 | self.memory.0[pc + 1] as u16
+    }
+
+    fn display(&mut self, x: Register, y: Register, height: u8) {
+        let vx = self.registers.get(x);
+        let vy = self.registers.get(y);
+        let x = vx % 64;
+        let y = vy % 32;
+        let vf = self.registers.get_mut(Register::VF);
+        *vf = 0;
+        for (j, y) in (y..std::cmp::min(32, y + height)).enumerate() {
+            let row = self.memory.get(self.index + j as u16);
+            for (i, x) in (x..std::cmp::min(64, x + 8)).enumerate() {
+                if row & (0b1 << (7 - i)) > 0 {
+                    if self.screen.0[y as usize][x as usize] {
+                        self.screen.0[y as usize][x as usize] = false;
+                        *vf = 1;
+                    } else {
+                        self.screen.0[y as usize][x as usize] = true;
+                    }
+                }
+            }
+        }
+    }
+
+    fn execute(&mut self, instruction: Instruction) -> u16 {
+        use Instruction::*;
+        match instruction {
+            Add(vx, val) => {
+                *self.registers.get_mut(vx) = self.registers.get(vx).wrapping_add(val);
+            }
+            AddIndex(vx) => self.index = self.index.wrapping_add(self.registers.get(vx) as u16),
+            AddReg(vx, vy) => {
+                let vy = self.registers.get(vy);
+                let vx = self.registers.get_mut(vx);
+                let (val, overflow) = vx.overflowing_add(vy);
+                *vx = val;
+                self.registers.set(Register::VF, overflow as u8);
+            }
+            And(vx, vy) => *self.registers.get_mut(vx) &= self.registers.get(vy),
+            Assign(vx, vy) => self.registers.set(vx, self.registers.get(vy)),
+            BinaryDecimalConversion(vx) => {
+                let val = self.registers.get(vx);
+                let hundreds = val / 100;
+                let tens = (val / 10) % 10;
+                let ones = val % 10;
+                self.memory.set(self.index, hundreds);
+                self.memory.set(self.index + 1, tens);
+                self.memory.set(self.index + 2, ones);
+            }
+            Call(_addr) => (),
+            CallSubroutine(addr) => {
+                self.stack.push(self.pc + 2);
+                return addr;
+            }
+            CondSkip(cond) => {
+                let cond = match cond {
+                    Cond::Eq(vx, nn) => self.registers.get(vx) == nn,
+                    Cond::Neq(vx, nn) => self.registers.get(vx) != nn,
+                    Cond::EqReg(vx, vy) => self.registers.get(vx) == self.registers.get(vy),
+                    Cond::NeqReg(vx, vy) => self.registers.get(vx) != self.registers.get(vy),
+                };
+                if cond {
+                    return self.pc + 4;
+                }
+            }
+            Display(x, y, height) => self.display(x, y, height),
+            DisplayClear => self.screen = Screen::default(),
+            FontCharacter(vx) => self.index = 0x50 + 5 * (self.registers.get(vx) & 0xF) as u16,
+            GetDelay(vx) => self.registers.set(vx, self.delay_timer.0),
+            GetKey(vx) => {
+                let keys = self.keypad.get_state();
+                for key in 0..16 {
+                    if keys & (0b1 << key) > 0 {
+                        self.registers.set(vx, key);
+                        return self.pc + 2;
+                    }
+                }
+                return self.pc;
+            }
+            Jump(addr) => return addr,
+            JumpOffset(addr) => return addr.wrapping_add(self.registers.get(Register::V0) as u16),
+            LoadMemory(x) => {
+                let x = x as u8;
+                for i in 0..=x {
+                    let register = Register::from_repr(i).unwrap();
+                    self.registers
+                        .set(register, self.memory.get(self.index + i as u16));
+                }
+            }
+            Or(vx, vy) => *self.registers.get_mut(vx) |= self.registers.get(vy),
+            Rand(vx, nn) => self.registers.set(vx, rand::rng().random::<u8>() & nn),
+            Return => return self.stack.pop().unwrap(),
+            SetDelay(vx) => self.delay_timer.set(self.registers.get(vx)),
+            SetIndex(val) => self.index = val,
+            SetRegister(vx, val) => self.registers.set(vx, val),
+            SetSound(vx) => self.sound_timer.set(self.registers.get(vx)),
+            ShiftLeft(vx, _vy) => {
+                let (val, overflow) = self.registers.get(vx).overflowing_mul(2);
+                self.registers.set(vx, val);
+                self.registers.set(Register::VF, overflow as u8);
+            }
+            ShiftRight(vx, _vy) => {
+                let val = self.registers.get(vx);
+                self.registers.set(vx, val >> 1);
+                self.registers.set(Register::VF, val & 0b1);
+            }
+            SkipIfKey(vx) => {
+                let key_index = self.registers.get(vx) & 0xF;
+                if self.keypad.is_pressed(key_index) {
+                    return self.pc + 4;
+                }
+            }
+            SkipIfNotKey(vx) => {
+                let key_index = self.registers.get(vx) & 0xF;
+                if !self.keypad.is_pressed(key_index) {
+                    return self.pc + 4;
+                }
+            }
+            StoreMemory(x) => {
+                let x = x as u8;
+                for i in 0..=x {
+                    let register = Register::from_repr(i).unwrap();
+                    self.memory
+                        .set(self.index + i as u16, self.registers.get(register));
+                }
+            }
+            Subtract(vx, vy) => {
+                let vx_val = self.registers.get(vx);
+                let vy_val = self.registers.get(vy);
+                let (val, underflow) = vx_val.overflowing_sub(vy_val);
+                self.registers.set(vx, val);
+                self.registers.set(Register::VF, !underflow as u8);
+            }
+            SubtractOther(vx, vy) => {
+                let vx_val = self.registers.get(vx);
+                let vy_val = self.registers.get(vy);
+                let (val, underflow) = vy_val.overflowing_sub(vx_val);
+                self.registers.set(vx, val);
+                self.registers.set(Register::VF, !underflow as u8);
+            }
+            Xor(vx, vy) => *self.registers.get_mut(vx) ^= self.registers.get(vy),
+        }
+        self.pc + 2
+    }
+
+    pub fn tick(&mut self) {
+        let instruction = self.fetch();
+        let instruction = Instruction::decode(instruction);
+        self.pc = self.execute(instruction);
+    }
+
+    /// The caller should tick the timers at a 60hz frequency.
+    pub fn tick_timers(&mut self) {
+        self.delay_timer.tick();
+        self.sound_timer.tick()
     }
 }
 
@@ -280,173 +443,6 @@ impl Instruction {
     }
 }
 
-impl CPU {
-    fn fetch(&self) -> u16 {
-        let pc = self.pc as usize;
-        (self.memory.0[pc] as u16) << 8 | self.memory.0[pc + 1] as u16
-    }
-
-    fn display(&mut self, x: Register, y: Register, height: u8) {
-        let vx = self.registers.get(x);
-        let vy = self.registers.get(y);
-        let x = vx % 64;
-        let y = vy % 32;
-        let vf = self.registers.get_mut(Register::VF);
-        *vf = 0;
-        for (j, y) in (y..std::cmp::min(32, y + height)).enumerate() {
-            let row = self.memory.get(self.index + j as u16);
-            for (i, x) in (x..std::cmp::min(64, x + 8)).enumerate() {
-                if row & (0b1 << (7 - i)) > 0 {
-                    if self.screen.0[y as usize][x as usize] {
-                        self.screen.0[y as usize][x as usize] = false;
-                        *vf = 1;
-                    } else {
-                        self.screen.0[y as usize][x as usize] = true;
-                    }
-                }
-            }
-        }
-    }
-
-    fn execute(&mut self, instruction: Instruction) -> u16 {
-        use Instruction::*;
-        match instruction {
-            Add(vx, val) => {
-                *self.registers.get_mut(vx) = self.registers.get(vx).wrapping_add(val);
-            }
-            AddIndex(vx) => self.index = self.index.wrapping_add(self.registers.get(vx) as u16),
-            AddReg(vx, vy) => {
-                let vy = self.registers.get(vy);
-                let vx = self.registers.get_mut(vx);
-                let (val, overflow) = vx.overflowing_add(vy);
-                *vx = val;
-                self.registers.set(Register::VF, overflow as u8);
-            }
-            And(vx, vy) => *self.registers.get_mut(vx) &= self.registers.get(vy),
-            Assign(vx, vy) => self.registers.set(vx, self.registers.get(vy)),
-            BinaryDecimalConversion(vx) => {
-                let val = self.registers.get(vx);
-                let hundreds = val / 100;
-                let tens = (val / 10) % 10;
-                let ones = val % 10;
-                self.memory.set(self.index, hundreds);
-                self.memory.set(self.index + 1, tens);
-                self.memory.set(self.index + 2, ones);
-            }
-            Call(_addr) => (),
-            CallSubroutine(addr) => {
-                self.stack.push(self.pc + 2);
-                return addr;
-            }
-            CondSkip(cond) => {
-                let cond = match cond {
-                    Cond::Eq(vx, nn) => self.registers.get(vx) == nn,
-                    Cond::Neq(vx, nn) => self.registers.get(vx) != nn,
-                    Cond::EqReg(vx, vy) => self.registers.get(vx) == self.registers.get(vy),
-                    Cond::NeqReg(vx, vy) => self.registers.get(vx) != self.registers.get(vy),
-                };
-                if cond {
-                    return self.pc + 4;
-                }
-            }
-            Display(x, y, height) => self.display(x, y, height),
-            DisplayClear => self.screen = Screen::default(),
-            FontCharacter(vx) => self.index = 0x50 + 5 * (self.registers.get(vx) & 0xF) as u16,
-            GetDelay(vx) => self.registers.set(vx, self.delay_timer.0),
-            GetKey(vx) => {
-                let keys = self.keypad.get_state();
-                for key in 0..16 {
-                    if keys & (0b1 << key) > 0 {
-                        self.registers.set(vx, key);
-                        return self.pc + 2;
-                    }
-                }
-                return self.pc;
-            }
-            Jump(addr) => return addr,
-            JumpOffset(addr) => return addr.wrapping_add(self.registers.get(Register::V0) as u16),
-            LoadMemory(x) => {
-                let x = x as u8;
-                for i in 0..=x {
-                    let register = Register::from_repr(i).unwrap();
-                    self.registers
-                        .set(register, self.memory.get(self.index + i as u16));
-                }
-            }
-            Or(vx, vy) => *self.registers.get_mut(vx) |= self.registers.get(vy),
-            Rand(vx, nn) => self.registers.set(vx, rand::rng().random::<u8>() & nn),
-            Return => return self.stack.pop().unwrap(),
-            SetDelay(vx) => self.delay_timer.set(self.registers.get(vx)),
-            SetIndex(val) => self.index = val,
-            SetRegister(vx, val) => self.registers.set(vx, val),
-            SetSound(vx) => self.sound_timer.set(self.registers.get(vx)),
-            ShiftLeft(vx, _vy) => {
-                let (val, overflow) = self.registers.get(vx).overflowing_mul(2);
-                self.registers.set(vx, val);
-                self.registers.set(Register::VF, overflow as u8);
-            }
-            ShiftRight(vx, _vy) => {
-                let val = self.registers.get(vx);
-                self.registers.set(vx, val >> 1);
-                self.registers.set(Register::VF, val & 0b1);
-            }
-            SkipIfKey(vx) => {
-                let key_index = self.registers.get(vx) & 0xF;
-                if self.keypad.is_pressed(key_index) {
-                    return self.pc + 4;
-                }
-            }
-            SkipIfNotKey(vx) => {
-                let key_index = self.registers.get(vx) & 0xF;
-                if !self.keypad.is_pressed(key_index) {
-                    return self.pc + 4;
-                }
-            }
-            StoreMemory(x) => {
-                let x = x as u8;
-                for i in 0..=x {
-                    let register = Register::from_repr(i).unwrap();
-                    self.memory
-                        .set(self.index + i as u16, self.registers.get(register));
-                }
-            }
-            Subtract(vx, vy) => {
-                let vx_val = self.registers.get(vx);
-                let vy_val = self.registers.get(vy);
-                let (val, underflow) = vx_val.overflowing_sub(vy_val);
-                self.registers.set(vx, val);
-                self.registers.set(Register::VF, !underflow as u8);
-            }
-            SubtractOther(vx, vy) => {
-                let vx_val = self.registers.get(vx);
-                let vy_val = self.registers.get(vy);
-                let (val, underflow) = vy_val.overflowing_sub(vx_val);
-                self.registers.set(vx, val);
-                self.registers.set(Register::VF, !underflow as u8);
-            }
-            Xor(vx, vy) => *self.registers.get_mut(vx) ^= self.registers.get(vy),
-        }
-        self.pc + 2
-    }
-
-    pub fn tick(&mut self) {
-        let instruction = self.fetch();
-        let instruction = Instruction::decode(instruction);
-        self.pc = self.execute(instruction);
-    }
-
-    /// The caller should tick the timers at a 60hz frequency.
-    pub fn tick_timers(&mut self) {
-        self.delay_timer.tick();
-        self.sound_timer.tick()
-    }
-
-    /// The caller should retrieve the screen at a 60hz frequency.
-    pub fn screen(&self) -> Screen {
-        self.screen.clone()
-    }
-}
-
 #[derive(Default, Debug, Clone)]
 struct FrameCounter {
     val: usize,
@@ -511,19 +507,30 @@ impl Keypad {
 
 struct DebuggerApp {
     state_rx: Receiver<Emulator>,
+    last_state: Emulator,
     keypad: Keypad,
-    screen: Screen,
     display_texture: egui::TextureHandle,
     _stream: OutputStream,
     sink: Sink,
+
+    on_pixel_color: egui::Color32,
+    off_pixel_color: egui::Color32,
+    grid_color: egui::Color32,
+    game_scale: f32,
+    show_grid: bool,
 }
 
-fn render_screen(screen: &Screen) -> egui::ColorImage {
+/// Renders the 64x32 screen state into a displayable image
+fn render_screen(
+    screen: &Screen,
+    on_color: egui::Color32,
+    off_color: egui::Color32,
+) -> egui::ColorImage {
     let pixels: Vec<egui::Color32> = screen
         .0
         .iter()
         .flat_map(|row| row.iter())
-        .map(|pixel| egui::Color32::from_gray(*pixel as u8 * 255))
+        .map(|pixel| if *pixel { on_color } else { off_color })
         .collect();
 
     egui::ColorImage {
@@ -538,7 +545,10 @@ impl DebuggerApp {
         let (state_tx, state_rx) = std::sync::mpsc::sync_channel(1);
         let keypad = Keypad::default();
         let ctx = cc.egui_ctx.clone();
+        ctx.set_visuals(egui::Visuals::dark());
+
         let mut emulator = Emulator::new(rom, keypad.clone());
+        let last_state = emulator.clone();
         thread::spawn(move || {
             loop {
                 let start = Instant::now();
@@ -558,6 +568,8 @@ impl DebuggerApp {
             }
         });
 
+        let on_pixel_color = Color32::from_rgb(220, 220, 220);
+        let off_pixel_color = Color32::from_rgb(20, 20, 20);
         let image = egui::ColorImage::new([64, 32], vec![egui::Color32::BLACK; 64 * 32]);
         let display_texture = cc
             .egui_ctx
@@ -573,22 +585,27 @@ impl DebuggerApp {
 
         Self {
             state_rx,
+            last_state,
             keypad,
-            screen: Screen::default(),
             display_texture,
             _stream: stream,
             sink,
+            on_pixel_color,
+            off_pixel_color,
+            grid_color: Color32::from_rgb(50, 50, 50),
+            game_scale: 16.0,
+            show_grid: false,
         }
     }
 
     fn check_for_updates(&mut self) {
         if let Ok(emulator) = self.state_rx.try_recv() {
-            self.screen = emulator.cpu.screen();
             if emulator.cpu.is_beep() {
                 self.sink.play();
             } else {
                 self.sink.pause();
             }
+            self.last_state = emulator;
         }
     }
 
@@ -623,20 +640,262 @@ impl DebuggerApp {
         })
     }
 
-    fn render_content(&mut self, ui: &mut egui::Ui) {
-        self.check_for_updates();
-        let image = render_screen(&self.screen);
+    /// Renders the 16 V-registers
+    fn render_register_viewer(&self, ui: &mut egui::Ui, cpu: &CPU) {
+        ui.heading("Register Viewer");
+        egui::Grid::new("register_grid")
+            .num_columns(4)
+            .spacing([10.0, 4.0])
+            .striped(true)
+            .show(ui, |ui| {
+                for (i, reg) in Register::iter().enumerate() {
+                    ui.label(RichText::new(format!("V{:X}", i)).text_style(TextStyle::Monospace));
+                    ui.label(
+                        RichText::new(format!("0x{:02X}", cpu.registers.get(reg)))
+                            .text_style(TextStyle::Monospace),
+                    );
+                    if (i + 1) % 2 == 0 {
+                        ui.end_row();
+                    }
+                }
+            });
+
+        ui.separator();
+
+        egui::Grid::new("special_registers")
+            .num_columns(2)
+            .spacing([10.0, 4.0])
+            .striped(true)
+            .show(ui, |ui| {
+                ui.label(RichText::new("PC").text_style(TextStyle::Monospace));
+                ui.label(
+                    RichText::new(format!("0x{:04X}", cpu.pc)).text_style(TextStyle::Monospace),
+                );
+                ui.end_row();
+
+                ui.label(RichText::new("IR").text_style(TextStyle::Monospace));
+                ui.label(
+                    RichText::new(format!("0x{:04X}", cpu.fetch()))
+                        .text_style(TextStyle::Monospace),
+                );
+                ui.end_row();
+
+                ui.label(RichText::new("I").text_style(TextStyle::Monospace));
+                ui.label(
+                    RichText::new(format!("0x{:04X}", cpu.index)).text_style(TextStyle::Monospace),
+                );
+                ui.end_row();
+
+                ui.label(RichText::new("Delay").text_style(TextStyle::Monospace));
+                ui.label(
+                    RichText::new(format!("{}", cpu.delay_timer.get()))
+                        .text_style(TextStyle::Monospace),
+                );
+                ui.end_row();
+
+                ui.label(RichText::new("Sound").text_style(TextStyle::Monospace));
+                ui.label(
+                    RichText::new(format!("{}", cpu.sound_timer.get()))
+                        .text_style(TextStyle::Monospace),
+                );
+                ui.end_row();
+            });
+    }
+
+    /// Renders the CPU stack
+    fn render_stack_viewer(&self, ui: &mut egui::Ui, cpu: &CPU) {
+        ui.heading("Stack Viewer");
+        ScrollArea::vertical().max_height(150.0).show(ui, |ui| {
+            egui::Grid::new("stack_grid")
+                .num_columns(2)
+                .striped(true)
+                .show(ui, |ui| {
+                    ui.label(RichText::new("Depth").strong());
+                    ui.label(RichText::new("Contents").strong());
+                    ui.end_row();
+
+                    if cpu.stack.is_empty() {
+                        ui.label("0");
+                        ui.label(RichText::new("0x0000").text_style(TextStyle::Monospace));
+                        ui.end_row();
+                    } else {
+                        for (i, &addr) in cpu.stack.iter().enumerate().rev() {
+                            ui.label(format!("{}", i));
+                            ui.label(
+                                RichText::new(format!("0x{:04X}", addr))
+                                    .text_style(TextStyle::Monospace),
+                            );
+                            ui.end_row();
+                        }
+                    }
+                });
+        });
+    }
+
+    fn render_memory_viewer(&self, ui: &mut egui::Ui, cpu: &CPU) {
+        ui.heading("Memory Viewer");
+        ScrollArea::vertical().show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.style_mut().override_text_style = Some(TextStyle::Monospace);
+                ui.spacing_mut().item_spacing.x = 2.0;
+
+                for (i, chunk) in cpu.memory.0.chunks(16).enumerate() {
+                    let addr = i * 16;
+                    // Highlight the row containing the PC
+                    let color = if (addr..addr + 16).contains(&(cpu.pc as usize)) {
+                        Color32::from_rgb(80, 80, 30) // Dark yellow
+                    } else {
+                        ui.style().visuals.text_color()
+                    };
+
+                    ui.label(RichText::new(format!("0x{:04X}", addr)).color(color));
+                    ui.add(egui::Separator::default().vertical().shrink(10.0));
+
+                    for byte in chunk {
+                        ui.label(RichText::new(format!("{:02X}", byte)).color(color));
+                    }
+                    ui.end_row();
+                }
+            });
+        });
+    }
+
+    /// Renders the right-hand settings panel
+    fn render_settings_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.heading("Settings");
+
+        ui.separator();
+        ui.label("Emulator");
+        /*
+        let mut ips = self.target_ips.load(Relaxed);
+        ui.add(egui::Slider::new(&mut ips, 0..=5000).text("Target IPS"));
+        self.target_ips.store(ips, Relaxed);
+        */
+
+        /*
+        if ui
+            .button(if self.running { "Pause" } else { "Run" })
+            .clicked()
+        {
+            self.running = !self.running;
+        }
+        */
+
+        ui.separator();
+        ui.label("Display");
+        ui.add(egui::Slider::new(&mut self.game_scale, 1.0..=32.0).text("Game Scale"));
+        ui.horizontal(|ui| {
+            ui.label("On Pixel:");
+            ui.color_edit_button_srgba(&mut self.on_pixel_color);
+        });
+        ui.horizontal(|ui| {
+            ui.label("Off Pixel:");
+            ui.color_edit_button_srgba(&mut self.off_pixel_color);
+        });
+
+        // These are not implemented yet, but show how you would add them
+        // ui.checkbox(&mut self.show_grid, "Show Grid");
+        // ui.horizontal(|ui| {
+        //     ui.label("Grid Colour:");
+        //     ui.color_edit_button_srgba(&mut self.grid_color);
+        // });
+    }
+
+    fn render_info_panel(&self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.heading("Emulator Info");
+
+        /*
+        let (fps, frame_time, state, instructions) = if let Some(state) = &self.last_state {
+            let (fps, frame_time) = (
+                1.0 / ctx.input(|i| i.predicted_dt),
+                ctx.input(|i| i.predicted_dt) * 1000.0,
+            );
+            let state_str = if state.running { "Running" } else { "Paused" };
+            (fps, frame_time, state_str, state.instructions_executed)
+        } else {
+            (0.0, 0.0, "Waiting...", 0)
+        };
+
+        egui::Grid::new("info_grid").num_columns(2).show(ui, |ui| {
+            ui.label("FPS:");
+            ui.label(format!("{:.1}", fps));
+            ui.end_row();
+
+            ui.label("Frame Time:");
+            ui.label(format!("{:.2} ms", frame_time));
+            ui.end_row();
+
+            ui.label("Current State:");
+            ui.label(state);
+            ui.end_row();
+
+            ui.label("Instructions Executed:");
+            ui.label(format!("{}", instructions));
+            ui.end_row();
+
+            ui.label("Audio Status:");
+            ui.label(if self.sink.is_paused() { "OK" } else { "BEEP" });
+            ui.end_row();
+        });
+        */
+    }
+
+    fn render_game_screen(&mut self, ui: &mut egui::Ui) {
+        let screen = &self.last_state.cpu.screen;
+        let image = render_screen(screen, self.on_pixel_color, self.off_pixel_color);
         self.display_texture
             .set(image, egui::TextureOptions::NEAREST);
-        ui.add(egui::Image::new(&self.display_texture).fit_to_original_size(16.0));
+
+        // Wrap the game in a frame
+        Frame::dark_canvas(ui.style()).show(ui, |ui| {
+            let image =
+                egui::Image::new(&self.display_texture).fit_to_original_size(self.game_scale);
+
+            // TODO: Implement grid drawing
+            // if self.show_grid { ... }
+
+            ui.add(image);
+        });
     }
 }
 
 impl eframe::App for DebuggerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.check_for_updates();
+        self.keypad.0.store(Self::check_keyboard(ctx), Relaxed);
+
+        TopBottomPanel::top("top_panel").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Chip-8 Emulator").size(16.0));
+            });
+        });
+
+        SidePanel::left("left_panel")
+            .resizable(true)
+            .default_width(250.0)
+            .show(ctx, |ui| {
+                ScrollArea::vertical().show(ui, |ui| {
+                    self.render_info_panel(ui, ctx);
+                    ui.separator();
+                    self.render_register_viewer(ui, &self.last_state.cpu);
+                    ui.separator();
+                    self.render_stack_viewer(ui, &self.last_state.cpu);
+                });
+            });
+
+        SidePanel::right("right_panel")
+            .resizable(true)
+            .default_width(200.0)
+            .show(ctx, |ui| {
+                ScrollArea::vertical().show(ui, |ui| {
+                    self.render_settings_panel(ui, ctx);
+                });
+            });
         egui::CentralPanel::default().show(ctx, |ui| {
-            self.render_content(ui);
-            self.keypad.0.store(Self::check_keyboard(ctx), Relaxed);
+            ui.heading("Game Display Window");
+            self.render_game_screen(ui);
+            ui.separator();
+            self.render_memory_viewer(ui, &self.last_state.cpu);
         });
     }
 }
