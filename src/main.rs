@@ -6,7 +6,7 @@ use spin_sleep::sleep;
 use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64};
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 use strum::IntoEnumIterator;
@@ -451,10 +451,11 @@ struct Emulator {
 }
 
 impl Emulator {
+    fn load_rom(&mut self, rom: Vec<u8>) {
+        self.cpu = CPU::new(rom, self.cpu.keypad.clone())
+    }
+
     fn tick(&mut self, target_ips: u32) -> Option<CPU> {
-        if !self.running.load(Relaxed) {
-            return None;
-        }
         self.cpu.tick();
 
         let target_fps = self.target_fps.load(Relaxed);
@@ -487,6 +488,7 @@ impl Keypad {
 
 struct DebuggerApp {
     state_rx: Receiver<CPU>,
+    rom_tx: Sender<Vec<u8>>,
     last_state: CPU,
     keypad: Keypad,
     display_texture: egui::TextureHandle,
@@ -525,6 +527,7 @@ fn render_screen(screen: &Screen, on_color: Color32, off_color: Color32) -> egui
 impl DebuggerApp {
     fn new(cc: &eframe::CreationContext, rom: Vec<u8>) -> Self {
         let (state_tx, state_rx) = std::sync::mpsc::sync_channel(1);
+        let (rom_tx, rom_rx) = std::sync::mpsc::channel::<Vec<u8>>();
         let keypad = Keypad::default();
         let ctx = cc.egui_ctx.clone();
         ctx.set_visuals(egui::Visuals::dark());
@@ -543,8 +546,22 @@ impl DebuggerApp {
         };
         let ips = target_ips.clone();
         let counter = instruction_counter.clone();
+        let running_clone = running.clone();
         thread::spawn(move || {
             loop {
+                if !running_clone.load(Relaxed) {
+                    sleep(Duration::from_millis(250));
+                }
+
+                if let Ok(new_rom) = rom_rx.try_recv() {
+                    emulator.load_rom(new_rom);
+                    emulator.cycle_accumulator = 0;
+                    if state_tx.send(emulator.cpu.clone()).is_err() {
+                        eprintln!("UI closed channel after ROM load.");
+                        break;
+                    }
+                }
+
                 let start = Instant::now();
                 let ips = ips.load(Relaxed);
                 let instruction_time = Duration::from_secs_f64(1.0 / ips as f64);
@@ -579,6 +596,7 @@ impl DebuggerApp {
         sink.pause();
 
         Self {
+            rom_tx,
             state_rx,
             last_state: cpu,
             keypad,
@@ -756,11 +774,30 @@ impl DebuggerApp {
 
     fn render_settings_panel(&mut self, ui: &mut egui::Ui) {
         ui.heading("Settings");
+        if ui.button("Load ROM...").clicked() {
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("CHIP-8 ROM", &["ch8", "rom"])
+                .add_filter("All Files", &["*"])
+                .pick_file()
+            {
+                match std::fs::read(&path) {
+                    Ok(rom_data) => {
+                        if let Err(e) = self.rom_tx.send(rom_data) {
+                            eprintln!("Failed to send ROM to emulator thread: {}", e);
+                        }
+                        self.running.store(true, Relaxed);
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to read ROM file {:?}: {}", path, e);
+                    }
+                }
+            }
+        }
 
         ui.separator();
         ui.label("Emulator");
         let mut ips = self.target_ips.load(Relaxed);
-        ui.add(egui::Slider::new(&mut ips, 0..=5000).text("Target IPS"));
+        ui.add(egui::Slider::new(&mut ips, 1..=100_000).text("Target IPS"));
         self.target_ips.store(ips, Relaxed);
 
         const FPS_OPTIONS: &[u32] = &[30, 60, 120, 144, 240];
@@ -882,8 +919,9 @@ impl eframe::App for DebuggerApp {
 }
 
 fn main() -> eframe::Result {
-    let rom = std::env::args().nth(1).unwrap();
-    let rom = std::fs::read(rom).unwrap();
+    let rom = std::env::args().nth(1).map_or_else(Vec::new, |path| {
+        std::fs::read(path).expect("Failed to read ROM from path")
+    });
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size(egui::Vec2::new(1920.0, 1080.0))
