@@ -114,7 +114,7 @@ impl CPU {
                 self.memory.set(self.index + 1, tens);
                 self.memory.set(self.index + 2, ones);
             }
-            Call(_addr) => (),
+            Call(addr) => return addr,
             CallSubroutine(addr) => {
                 self.stack.push(self.pc + 2);
                 return addr;
