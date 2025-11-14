@@ -1,12 +1,11 @@
-use eframe::egui::{
-    self, Color32, Frame, Key, RichText, ScrollArea, SidePanel, TextStyle, TopBottomPanel, Vec2,
-};
+#![feature(iter_array_chunks)]
+use eframe::egui::{self, Color32, Frame, Key, RichText, ScrollArea, SidePanel, TextStyle, Vec2};
 use rand::prelude::*;
 use rodio::{OutputStream, Sink, Source};
 use spin_sleep::sleep;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU16;
 use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64};
 use std::sync::mpsc::Receiver;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -267,7 +266,7 @@ impl Registers {
     }
 }
 
-#[derive(Debug, strum::FromRepr, Copy, Clone, strum::EnumIter)]
+#[derive(Debug, strum::FromRepr, Copy, Clone, strum::EnumIter, strum::Display)]
 #[repr(u8)]
 enum Register {
     V0 = 0x0,
@@ -443,47 +442,28 @@ impl Instruction {
     }
 }
 
-#[derive(Default, Debug, Clone)]
-struct FrameCounter {
-    val: usize,
-    remainder: u8,
-}
-
-/// Renders a frame every 11.66666 ticks
-impl FrameCounter {
-    /// Returns true if a frame should be rendered.
-    fn tick(&mut self) -> bool {
-        self.val += 1;
-        let limit = if self.remainder == 2 { 11 } else { 12 };
-        if self.val >= limit {
-            self.val = 0;
-            self.remainder = (self.remainder + 1) % 3;
-            true
-        } else {
-            false
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct Emulator {
     cpu: CPU,
-    frame_counter: FrameCounter,
+    running: Arc<AtomicBool>,
+    target_fps: Arc<AtomicU32>,
+    cycle_accumulator: u32,
 }
 
 impl Emulator {
-    fn new(rom: Vec<u8>, keypad: Keypad) -> Self {
-        Self {
-            cpu: CPU::new(rom, keypad),
-            frame_counter: FrameCounter::default(),
+    fn tick(&mut self, target_ips: u32) -> Option<CPU> {
+        if !self.running.load(Relaxed) {
+            return None;
         }
-    }
-
-    fn tick(&mut self) -> Option<Self> {
         self.cpu.tick();
-        if self.frame_counter.tick() {
+
+        let target_fps = self.target_fps.load(Relaxed);
+        let target_ips = target_ips;
+        self.cycle_accumulator += target_fps;
+        if self.cycle_accumulator > target_ips {
+            self.cycle_accumulator -= target_ips;
             self.cpu.tick_timers();
-            return Some(self.clone());
+            return Some(self.cpu.clone());
         }
         None
     }
@@ -506,27 +486,29 @@ impl Keypad {
 }
 
 struct DebuggerApp {
-    state_rx: Receiver<Emulator>,
-    last_state: Emulator,
+    state_rx: Receiver<CPU>,
+    last_state: CPU,
     keypad: Keypad,
     display_texture: egui::TextureHandle,
     _stream: OutputStream,
     sink: Sink,
 
-    on_pixel_color: egui::Color32,
-    off_pixel_color: egui::Color32,
-    grid_color: egui::Color32,
+    // Stats
+    last_frame: Instant,
+    instruction_counter: Arc<AtomicU64>,
+
+    // Settings
+    on_pixel_color: Color32,
+    off_pixel_color: Color32,
     game_scale: f32,
-    show_grid: bool,
+    target_ips: Arc<AtomicU32>,
+    target_fps: Arc<AtomicU32>,
+    running: Arc<AtomicBool>,
 }
 
 /// Renders the 64x32 screen state into a displayable image
-fn render_screen(
-    screen: &Screen,
-    on_color: egui::Color32,
-    off_color: egui::Color32,
-) -> egui::ColorImage {
-    let pixels: Vec<egui::Color32> = screen
+fn render_screen(screen: &Screen, on_color: Color32, off_color: Color32) -> egui::ColorImage {
+    let pixels: Vec<Color32> = screen
         .0
         .iter()
         .flat_map(|row| row.iter())
@@ -547,14 +529,27 @@ impl DebuggerApp {
         let ctx = cc.egui_ctx.clone();
         ctx.set_visuals(egui::Visuals::dark());
 
-        let mut emulator = Emulator::new(rom, keypad.clone());
-        let last_state = emulator.clone();
+        let running = Arc::new(AtomicBool::new(true));
+        let target_ips = Arc::new(AtomicU32::new(700));
+        let target_fps = Arc::new(AtomicU32::new(60));
+        let instruction_counter: Arc<AtomicU64> = Arc::default();
+
+        let cpu = CPU::new(rom, keypad.clone());
+        let mut emulator = Emulator {
+            cpu: cpu.clone(),
+            running: running.clone(),
+            target_fps: target_fps.clone(),
+            cycle_accumulator: 0,
+        };
+        let ips = target_ips.clone();
+        let counter = instruction_counter.clone();
         thread::spawn(move || {
             loop {
                 let start = Instant::now();
-                let ips = 700;
+                let ips = ips.load(Relaxed);
                 let instruction_time = Duration::from_secs_f64(1.0 / ips as f64);
-                if let Some(state) = emulator.tick() {
+                counter.fetch_add(1, Relaxed);
+                if let Some(state) = emulator.tick(ips) {
                     if state_tx.send(state).is_err() {
                         eprintln!("UI closed channel.");
                         break;
@@ -568,9 +563,9 @@ impl DebuggerApp {
             }
         });
 
-        let on_pixel_color = Color32::from_rgb(220, 220, 220);
-        let off_pixel_color = Color32::from_rgb(20, 20, 20);
-        let image = egui::ColorImage::new([64, 32], vec![egui::Color32::BLACK; 64 * 32]);
+        let on_pixel_color = Color32::WHITE;
+        let off_pixel_color = Color32::BLACK;
+        let image = egui::ColorImage::new([64, 32], vec![Color32::BLACK; 64 * 32]);
         let display_texture = cc
             .egui_ctx
             .load_texture("LCD", image, egui::TextureOptions::NEAREST);
@@ -585,27 +580,30 @@ impl DebuggerApp {
 
         Self {
             state_rx,
-            last_state,
+            last_state: cpu,
             keypad,
             display_texture,
             _stream: stream,
             sink,
             on_pixel_color,
             off_pixel_color,
-            grid_color: Color32::from_rgb(50, 50, 50),
             game_scale: 16.0,
-            show_grid: false,
+            target_ips,
+            target_fps,
+            running,
+            last_frame: Instant::now(),
+            instruction_counter,
         }
     }
 
     fn check_for_updates(&mut self) {
-        if let Ok(emulator) = self.state_rx.try_recv() {
-            if emulator.cpu.is_beep() {
+        if let Ok(cpu) = self.state_rx.try_recv() {
+            if cpu.is_beep() {
                 self.sink.play();
             } else {
                 self.sink.pause();
             }
-            self.last_state = emulator;
+            self.last_state = cpu;
         }
     }
 
@@ -648,15 +646,15 @@ impl DebuggerApp {
             .spacing([10.0, 4.0])
             .striped(true)
             .show(ui, |ui| {
-                for (i, reg) in Register::iter().enumerate() {
-                    ui.label(RichText::new(format!("V{:X}", i)).text_style(TextStyle::Monospace));
-                    ui.label(
-                        RichText::new(format!("0x{:02X}", cpu.registers.get(reg)))
-                            .text_style(TextStyle::Monospace),
-                    );
-                    if (i + 1) % 2 == 0 {
-                        ui.end_row();
+                for row in Register::iter().array_chunks::<2>() {
+                    for reg in row {
+                        ui.label(RichText::new(format!("{reg}")).text_style(TextStyle::Monospace));
+                        ui.label(
+                            RichText::new(format!("0x{:02X}", cpu.registers.get(reg)))
+                                .text_style(TextStyle::Monospace),
+                        );
                     }
+                    ui.end_row();
                 }
             });
 
@@ -667,37 +665,28 @@ impl DebuggerApp {
             .spacing([10.0, 4.0])
             .striped(true)
             .show(ui, |ui| {
-                ui.label(RichText::new("PC").text_style(TextStyle::Monospace));
-                ui.label(
-                    RichText::new(format!("0x{:04X}", cpu.pc)).text_style(TextStyle::Monospace),
-                );
+                ui.style_mut().override_text_style = Some(TextStyle::Monospace);
+                ui.spacing_mut().item_spacing.x = 2.0;
+                ui.label(RichText::new("PC"));
+                ui.label(RichText::new(format!("0x{:04X}", cpu.pc)));
+                ui.label(RichText::new(format!("0x{:04X}", cpu.pc)));
+
                 ui.end_row();
 
-                ui.label(RichText::new("IR").text_style(TextStyle::Monospace));
-                ui.label(
-                    RichText::new(format!("0x{:04X}", cpu.fetch()))
-                        .text_style(TextStyle::Monospace),
-                );
+                ui.label(RichText::new("IR"));
+                ui.label(RichText::new(format!("0x{:04X}", cpu.fetch())));
                 ui.end_row();
 
-                ui.label(RichText::new("I").text_style(TextStyle::Monospace));
-                ui.label(
-                    RichText::new(format!("0x{:04X}", cpu.index)).text_style(TextStyle::Monospace),
-                );
+                ui.label(RichText::new("I"));
+                ui.label(RichText::new(format!("0x{:04X}", cpu.index)));
                 ui.end_row();
 
-                ui.label(RichText::new("Delay").text_style(TextStyle::Monospace));
-                ui.label(
-                    RichText::new(format!("{}", cpu.delay_timer.get()))
-                        .text_style(TextStyle::Monospace),
-                );
+                ui.label(RichText::new("Delay"));
+                ui.label(RichText::new(format!("{}", cpu.delay_timer.get())));
                 ui.end_row();
 
-                ui.label(RichText::new("Sound").text_style(TextStyle::Monospace));
-                ui.label(
-                    RichText::new(format!("{}", cpu.sound_timer.get()))
-                        .text_style(TextStyle::Monospace),
-                );
+                ui.label(RichText::new("Sound"));
+                ui.label(RichText::new(format!("{}", cpu.sound_timer.get())));
                 ui.end_row();
             });
     }
@@ -714,19 +703,13 @@ impl DebuggerApp {
                     ui.label(RichText::new("Contents").strong());
                     ui.end_row();
 
-                    if cpu.stack.is_empty() {
-                        ui.label("0");
-                        ui.label(RichText::new("0x0000").text_style(TextStyle::Monospace));
+                    for (i, &addr) in cpu.stack.iter().enumerate().rev() {
+                        ui.label(format!("{}", i));
+                        ui.label(
+                            RichText::new(format!("0x{:04X}", addr))
+                                .text_style(TextStyle::Monospace),
+                        );
                         ui.end_row();
-                    } else {
-                        for (i, &addr) in cpu.stack.iter().enumerate().rev() {
-                            ui.label(format!("{}", i));
-                            ui.label(
-                                RichText::new(format!("0x{:04X}", addr))
-                                    .text_style(TextStyle::Monospace),
-                            );
-                            ui.end_row();
-                        }
                     }
                 });
         });
@@ -741,88 +724,97 @@ impl DebuggerApp {
 
                 for (i, chunk) in cpu.memory.0.chunks(16).enumerate() {
                     let addr = i * 16;
-                    // Highlight the row containing the PC
                     let color = if (addr..addr + 16).contains(&(cpu.pc as usize)) {
-                        Color32::from_rgb(80, 80, 30) // Dark yellow
+                        Color32::YELLOW
                     } else {
-                        ui.style().visuals.text_color()
+                        Color32::LIGHT_GREEN
                     };
 
                     ui.label(RichText::new(format!("0x{:04X}", addr)).color(color));
                     ui.add(egui::Separator::default().vertical().shrink(10.0));
-
                     for byte in chunk {
                         ui.label(RichText::new(format!("{:02X}", byte)).color(color));
                     }
+                    ui.add(egui::Separator::default().vertical().shrink(10.0));
+                    ui.label(
+                        RichText::new(
+                            chunk
+                                .iter()
+                                .map(|&b| match b {
+                                    b' '..=b'~' => b as char,
+                                    _ => '.',
+                                })
+                                .collect::<String>(),
+                        )
+                        .color(color),
+                    );
                     ui.end_row();
                 }
             });
         });
     }
 
-    /// Renders the right-hand settings panel
-    fn render_settings_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn render_settings_panel(&mut self, ui: &mut egui::Ui) {
         ui.heading("Settings");
 
         ui.separator();
         ui.label("Emulator");
-        /*
         let mut ips = self.target_ips.load(Relaxed);
         ui.add(egui::Slider::new(&mut ips, 0..=5000).text("Target IPS"));
         self.target_ips.store(ips, Relaxed);
-        */
 
-        /*
-        if ui
-            .button(if self.running { "Pause" } else { "Run" })
-            .clicked()
-        {
-            self.running = !self.running;
+        const FPS_OPTIONS: &[u32] = &[30, 60, 120, 144, 240];
+        let mut fps = self.target_fps.load(Relaxed);
+        ui.horizontal(|ui| {
+            ui.label("Emulator Target FPS:");
+            egui::ComboBox::new("fps_select", "")
+                .selected_text(format!("{} FPS", fps))
+                .show_ui(ui, |ui| {
+                    // 3. Iterate over your options
+                    for &fps_option in FPS_OPTIONS {
+                        ui.selectable_value(&mut fps, fps_option, format!("{} FPS", fps_option));
+                    }
+                });
+            self.target_fps.store(fps, Relaxed);
+        });
+
+        let running = self.running.load(Relaxed);
+        if ui.button(if running { "Pause" } else { "Run" }).clicked() {
+            self.running.store(!running, Relaxed);
         }
-        */
 
         ui.separator();
         ui.label("Display");
         ui.add(egui::Slider::new(&mut self.game_scale, 1.0..=32.0).text("Game Scale"));
         ui.horizontal(|ui| {
-            ui.label("On Pixel:");
+            ui.label(RichText::new("On Pixel: ").text_style(TextStyle::Monospace));
             ui.color_edit_button_srgba(&mut self.on_pixel_color);
         });
         ui.horizontal(|ui| {
-            ui.label("Off Pixel:");
+            ui.label(RichText::new("Off Pixel:").text_style(TextStyle::Monospace));
             ui.color_edit_button_srgba(&mut self.off_pixel_color);
         });
-
-        // These are not implemented yet, but show how you would add them
-        // ui.checkbox(&mut self.show_grid, "Show Grid");
-        // ui.horizontal(|ui| {
-        //     ui.label("Grid Colour:");
-        //     ui.color_edit_button_srgba(&mut self.grid_color);
-        // });
     }
 
-    fn render_info_panel(&self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn render_info_panel(&self, ui: &mut egui::Ui) {
         ui.heading("Emulator Info");
 
-        /*
-        let (fps, frame_time, state, instructions) = if let Some(state) = &self.last_state {
-            let (fps, frame_time) = (
-                1.0 / ctx.input(|i| i.predicted_dt),
-                ctx.input(|i| i.predicted_dt) * 1000.0,
-            );
-            let state_str = if state.running { "Running" } else { "Paused" };
-            (fps, frame_time, state_str, state.instructions_executed)
+        let frame_time = self.last_frame.elapsed();
+        let fps = 1.0 / frame_time.as_secs_f64();
+        let state = if self.running.load(Relaxed) {
+            "Running"
         } else {
-            (0.0, 0.0, "Waiting...", 0)
+            "Stopped"
         };
+        let instructions = self.instruction_counter.load(Relaxed);
 
         egui::Grid::new("info_grid").num_columns(2).show(ui, |ui| {
-            ui.label("FPS:");
+            ui.label("GUI FPS:");
             ui.label(format!("{:.1}", fps));
             ui.end_row();
 
             ui.label("Frame Time:");
-            ui.label(format!("{:.2} ms", frame_time));
+            ui.label(format!("{} ms", frame_time.as_millis()));
             ui.end_row();
 
             ui.label("Current State:");
@@ -830,18 +822,20 @@ impl DebuggerApp {
             ui.end_row();
 
             ui.label("Instructions Executed:");
-            ui.label(format!("{}", instructions));
+            ui.label(format!("{instructions}"));
             ui.end_row();
 
             ui.label("Audio Status:");
-            ui.label(if self.sink.is_paused() { "OK" } else { "BEEP" });
+            ui.label(
+                RichText::new(if self.sink.is_paused() { "OK" } else { "BEEP" })
+                    .color(Color32::LIGHT_GREEN),
+            );
             ui.end_row();
         });
-        */
     }
 
     fn render_game_screen(&mut self, ui: &mut egui::Ui) {
-        let screen = &self.last_state.cpu.screen;
+        let screen = &self.last_state.screen;
         let image = render_screen(screen, self.on_pixel_color, self.off_pixel_color);
         self.display_texture
             .set(image, egui::TextureOptions::NEAREST);
@@ -850,10 +844,6 @@ impl DebuggerApp {
         Frame::dark_canvas(ui.style()).show(ui, |ui| {
             let image =
                 egui::Image::new(&self.display_texture).fit_to_original_size(self.game_scale);
-
-            // TODO: Implement grid drawing
-            // if self.show_grid { ... }
-
             ui.add(image);
         });
     }
@@ -864,39 +854,30 @@ impl eframe::App for DebuggerApp {
         self.check_for_updates();
         self.keypad.0.store(Self::check_keyboard(ctx), Relaxed);
 
-        TopBottomPanel::top("top_panel").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Chip-8 Emulator").size(16.0));
-            });
-        });
-
         SidePanel::left("left_panel")
             .resizable(true)
             .default_width(250.0)
             .show(ctx, |ui| {
-                ScrollArea::vertical().show(ui, |ui| {
-                    self.render_info_panel(ui, ctx);
-                    ui.separator();
-                    self.render_register_viewer(ui, &self.last_state.cpu);
-                    ui.separator();
-                    self.render_stack_viewer(ui, &self.last_state.cpu);
-                });
+                self.render_info_panel(ui);
+                ui.separator();
+                self.render_register_viewer(ui, &self.last_state);
+                ui.separator();
+                self.render_stack_viewer(ui, &self.last_state);
             });
 
         SidePanel::right("right_panel")
             .resizable(true)
             .default_width(200.0)
             .show(ctx, |ui| {
-                ScrollArea::vertical().show(ui, |ui| {
-                    self.render_settings_panel(ui, ctx);
-                });
+                self.render_settings_panel(ui);
             });
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Game Display Window");
             self.render_game_screen(ui);
             ui.separator();
-            self.render_memory_viewer(ui, &self.last_state.cpu);
+            self.render_memory_viewer(ui, &self.last_state);
         });
+        self.last_frame = Instant::now();
     }
 }
 
@@ -904,7 +885,9 @@ fn main() -> eframe::Result {
     let rom = std::env::args().nth(1).unwrap();
     let rom = std::fs::read(rom).unwrap();
     let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size(egui::Vec2::new(1024.0, 512.0)),
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size(egui::Vec2::new(1920.0, 1080.0))
+            .with_min_inner_size(egui::Vec2::new(800.0, 600.0)),
         ..Default::default()
     };
     eframe::run_native(
