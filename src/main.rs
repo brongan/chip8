@@ -9,7 +9,7 @@ use std::sync::mpsc::Receiver;
 use std::thread;
 use std::time::{Duration, Instant};
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 struct CPU {
     pc: u16,
     index: u16,
@@ -59,7 +59,7 @@ impl CPU {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Memory([u8; 4096]);
 
 impl Default for Memory {
@@ -87,7 +87,7 @@ impl Default for Screen {
     }
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 struct Registers([u8; 16]);
 
 impl Registers {
@@ -125,7 +125,7 @@ enum Register {
     VF = 0xf,
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 struct Timer(u8);
 
 impl Timer {
@@ -447,7 +447,7 @@ impl CPU {
     }
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 struct FrameCounter {
     val: usize,
     remainder: u8,
@@ -469,7 +469,7 @@ impl FrameCounter {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Emulator {
     cpu: CPU,
     frame_counter: FrameCounter,
@@ -483,22 +483,14 @@ impl Emulator {
         }
     }
 
-    fn tick(&mut self) -> Option<EmulatorState> {
+    fn tick(&mut self) -> Option<Self> {
         self.cpu.tick();
         if self.frame_counter.tick() {
             self.cpu.tick_timers();
-            return Some(EmulatorState {
-                beep: self.cpu.is_beep(),
-                screen: self.cpu.screen(),
-            });
+            return Some(self.clone());
         }
         None
     }
-}
-
-struct EmulatorState {
-    beep: bool,
-    screen: Screen,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -518,7 +510,7 @@ impl Keypad {
 }
 
 struct DebuggerApp {
-    state_rx: Receiver<EmulatorState>,
+    state_rx: Receiver<Emulator>,
     keypad: Keypad,
     screen: Screen,
     display_texture: egui::TextureHandle,
@@ -590,9 +582,9 @@ impl DebuggerApp {
     }
 
     fn check_for_updates(&mut self) {
-        if let Ok(state) = self.state_rx.try_recv() {
-            self.screen = state.screen;
-            if state.beep {
+        if let Ok(emulator) = self.state_rx.try_recv() {
+            self.screen = emulator.cpu.screen();
+            if emulator.cpu.is_beep() {
                 self.sink.play();
             } else {
                 self.sink.pause();
