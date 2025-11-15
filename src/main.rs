@@ -1,5 +1,8 @@
 #![feature(iter_array_chunks)]
-use eframe::egui::{self, Color32, Frame, Key, RichText, ScrollArea, SidePanel, TextStyle, Vec2};
+use eframe::egui::{
+    self, Align, Button, Color32, Frame, Key, Layout, RichText, ScrollArea, SidePanel, TextStyle,
+    Vec2,
+};
 use rand::prelude::*;
 use rodio::{OutputStream, Sink, Source};
 use spin_sleep::sleep;
@@ -660,217 +663,281 @@ impl DebuggerApp {
 
     /// Renders the 16 V-registers
     fn render_register_viewer(&self, ui: &mut egui::Ui, cpu: &CPU) {
-        ui.heading("Register Viewer");
-        egui::Grid::new("register_grid")
-            .num_columns(4)
-            .spacing([10.0, 4.0])
-            .striped(true)
+        egui::CollapsingHeader::new("Register Viewer")
+            .default_open(true)
             .show(ui, |ui| {
-                for row in Register::iter().array_chunks::<2>() {
-                    for reg in row {
-                        ui.label(RichText::new(format!("{reg}")).text_style(TextStyle::Monospace));
-                        ui.label(
-                            RichText::new(format!("0x{:02X}", cpu.registers.get(reg)))
-                                .text_style(TextStyle::Monospace),
-                        );
-                    }
-                    ui.end_row();
-                }
-            });
+                egui::Grid::new("register_grid")
+                    .num_columns(4)
+                    .spacing([10.0, 4.0])
+                    .striped(true)
+                    .show(ui, |ui| {
+                        for row in Register::iter().array_chunks::<2>() {
+                            for reg in row {
+                                ui.label(
+                                    RichText::new(format!("{reg}"))
+                                        .text_style(TextStyle::Monospace),
+                                );
+                                ui.label(
+                                    RichText::new(format!("0x{:02X}", cpu.registers.get(reg)))
+                                        .text_style(TextStyle::Monospace),
+                                );
+                            }
+                            ui.end_row();
+                        }
+                    });
 
-        ui.separator();
+                ui.separator();
 
-        egui::Grid::new("special_registers")
-            .num_columns(2)
-            .spacing([10.0, 4.0])
-            .striped(true)
-            .show(ui, |ui| {
-                ui.style_mut().override_text_style = Some(TextStyle::Monospace);
-                ui.spacing_mut().item_spacing.x = 2.0;
-                ui.label(RichText::new("PC"));
-                ui.label(RichText::new(format!("0x{:04X}", cpu.pc)));
-                ui.label(RichText::new(format!("0x{:04X}", cpu.pc)));
+                egui::Grid::new("special_registers")
+                    .num_columns(2)
+                    .spacing([10.0, 4.0])
+                    .striped(true)
+                    .show(ui, |ui| {
+                        ui.style_mut().override_text_style = Some(TextStyle::Monospace);
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        ui.label(RichText::new("PC"));
+                        ui.label(RichText::new(format!("0x{:04X}", cpu.pc)));
+                        ui.label(RichText::new(format!("0x{:04X}", cpu.pc)));
 
-                ui.end_row();
+                        ui.end_row();
 
-                ui.label(RichText::new("IR"));
-                ui.label(RichText::new(format!("0x{:04X}", cpu.fetch())));
-                ui.end_row();
+                        ui.label(RichText::new("IR"));
+                        ui.label(RichText::new(format!("0x{:04X}", cpu.fetch())));
+                        ui.end_row();
 
-                ui.label(RichText::new("I"));
-                ui.label(RichText::new(format!("0x{:04X}", cpu.index)));
-                ui.end_row();
+                        ui.label(RichText::new("I"));
+                        ui.label(RichText::new(format!("0x{:04X}", cpu.index)));
+                        ui.end_row();
 
-                ui.label(RichText::new("Delay"));
-                ui.label(RichText::new(format!("{}", cpu.delay_timer.get())));
-                ui.end_row();
+                        ui.label(RichText::new("Delay"));
+                        ui.label(RichText::new(format!("{}", cpu.delay_timer.get())));
+                        ui.end_row();
 
-                ui.label(RichText::new("Sound"));
-                ui.label(RichText::new(format!("{}", cpu.sound_timer.get())));
-                ui.end_row();
+                        ui.label(RichText::new("Sound"));
+                        ui.label(RichText::new(format!("{}", cpu.sound_timer.get())));
+                        ui.end_row();
+                    });
             });
     }
 
     /// Renders the CPU stack
     fn render_stack_viewer(&self, ui: &mut egui::Ui, cpu: &CPU) {
-        ui.heading("Stack Viewer");
-        ScrollArea::vertical().max_height(150.0).show(ui, |ui| {
-            egui::Grid::new("stack_grid")
-                .num_columns(2)
-                .striped(true)
-                .show(ui, |ui| {
-                    ui.label(RichText::new("Depth").strong());
-                    ui.label(RichText::new("Contents").strong());
-                    ui.end_row();
+        egui::CollapsingHeader::new("Stack Viewer")
+            .default_open(true)
+            .show(ui, |ui| {
+                ScrollArea::vertical().max_height(150.0).show(ui, |ui| {
+                    egui::Grid::new("stack_grid")
+                        .num_columns(2)
+                        .striped(true)
+                        .show(ui, |ui| {
+                            ui.label(RichText::new("Depth").strong());
+                            ui.label(RichText::new("Contents").strong());
+                            ui.end_row();
 
-                    for (i, &addr) in cpu.stack.iter().enumerate().rev() {
-                        ui.label(format!("{}", i));
-                        ui.label(
-                            RichText::new(format!("0x{:04X}", addr))
-                                .text_style(TextStyle::Monospace),
-                        );
-                        ui.end_row();
-                    }
+                            for (i, &addr) in cpu.stack.iter().enumerate().rev() {
+                                ui.label(format!("{}", i));
+                                ui.label(
+                                    RichText::new(format!("0x{:04X}", addr))
+                                        .text_style(TextStyle::Monospace),
+                                );
+                                ui.end_row();
+                            }
+                        });
                 });
-        });
+            });
     }
 
     fn render_memory_viewer(&self, ui: &mut egui::Ui, cpu: &CPU) {
-        ui.heading("Memory Viewer");
-        ScrollArea::vertical().show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.style_mut().override_text_style = Some(TextStyle::Monospace);
-                ui.spacing_mut().item_spacing.x = 2.0;
+        egui::CollapsingHeader::new("Memory Viewer")
+            .default_open(true)
+            .show(ui, |ui| {
+                ScrollArea::vertical().show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.style_mut().override_text_style = Some(TextStyle::Monospace);
+                        ui.spacing_mut().item_spacing.x = 2.0;
 
-                for (i, chunk) in cpu.memory.0.chunks(16).enumerate() {
-                    let addr = i * 16;
-                    let color = if (addr..addr + 16).contains(&(cpu.pc as usize)) {
-                        Color32::YELLOW
-                    } else {
-                        Color32::LIGHT_GREEN
-                    };
+                        for (i, chunk) in cpu.memory.0.chunks(16).enumerate() {
+                            let addr = i * 16;
+                            let color = if (addr..addr + 16).contains(&(cpu.pc as usize)) {
+                                Color32::YELLOW
+                            } else {
+                                Color32::LIGHT_GREEN
+                            };
 
-                    ui.label(RichText::new(format!("0x{:04X}", addr)).color(color));
-                    ui.add(egui::Separator::default().vertical().shrink(10.0));
-                    for byte in chunk {
-                        ui.label(RichText::new(format!("{:02X}", byte)).color(color));
-                    }
-                    ui.add(egui::Separator::default().vertical().shrink(10.0));
-                    ui.label(
-                        RichText::new(
-                            chunk
-                                .iter()
-                                .map(|&b| match b {
-                                    b' '..=b'~' => b as char,
-                                    _ => '.',
-                                })
-                                .collect::<String>(),
-                        )
-                        .color(color),
-                    );
-                    ui.end_row();
-                }
+                            ui.label(RichText::new(format!("0x{:04X}", addr)).color(color));
+                            ui.add(egui::Separator::default().vertical().shrink(10.0));
+                            for byte in chunk {
+                                ui.label(RichText::new(format!("{:02X}", byte)).color(color));
+                            }
+                            ui.add(egui::Separator::default().vertical().shrink(10.0));
+                            ui.label(
+                                RichText::new(
+                                    chunk
+                                        .iter()
+                                        .map(|&b| match b {
+                                            b' '..=b'~' => b as char,
+                                            _ => '.',
+                                        })
+                                        .collect::<String>(),
+                                )
+                                .color(color),
+                            );
+                            ui.end_row();
+                        }
+                    });
+                });
             });
-        });
     }
 
     fn render_settings_panel(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Settings");
-        if ui.button("Load ROM...").clicked() {
-            if let Some(path) = rfd::FileDialog::new()
-                .add_filter("CHIP-8 ROM", &["ch8", "rom"])
-                .add_filter("All Files", &["*"])
-                .pick_file()
-            {
-                match std::fs::read(&path) {
-                    Ok(rom_data) => {
-                        if let Err(e) = self.rom_tx.send(rom_data) {
-                            eprintln!("Failed to send ROM to emulator thread: {}", e);
+        egui::CollapsingHeader::new("Settings Menu")
+            .default_open(true)
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(2.0, 2.0);
+
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    let running = self.running.load(Relaxed);
+
+                    let run_button = Button::new(if running { "Pause" } else { "Run" })
+                        .min_size(egui::vec2(60.0, 30.0));
+                    let load_button = Button::new("Load ROM...").min_size(egui::vec2(150.0, 30.0));
+
+                    if ui.add(run_button).clicked() {
+                        self.running.store(!running, Relaxed);
+                    }
+
+                    if ui.add(load_button).clicked() {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("CHIP-8 ROM", &["ch8", "rom"])
+                            .add_filter("All Files", &["*"])
+                            .pick_file()
+                        {
+                            match std::fs::read(&path) {
+                                Ok(rom_data) => {
+                                    if let Err(e) = self.rom_tx.send(rom_data) {
+                                        eprintln!("Failed to send ROM to emulator thread: {}", e);
+                                    }
+                                    self.running.store(true, Relaxed);
+                                }
+                                Err(e) => {
+                                    eprintln!("Failed to read ROM file {:?}: {}", path, e);
+                                }
+                            }
                         }
-                        self.running.store(true, Relaxed);
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to read ROM file {:?}: {}", path, e);
-                    }
-                }
-            }
-        }
-
-        ui.separator();
-        ui.label("Emulator");
-        let mut ips = self.target_ips.load(Relaxed);
-        ui.add(egui::Slider::new(&mut ips, 1..=100_000).text("Target IPS"));
-        self.target_ips.store(ips, Relaxed);
-
-        const FPS_OPTIONS: &[u32] = &[30, 60, 120, 144, 240];
-        let mut fps = self.target_fps.load(Relaxed);
-        ui.horizontal(|ui| {
-            ui.label("Emulator Target FPS:");
-            egui::ComboBox::new("fps_select", "")
-                .selected_text(format!("{} FPS", fps))
-                .show_ui(ui, |ui| {
-                    // 3. Iterate over your options
-                    for &fps_option in FPS_OPTIONS {
-                        ui.selectable_value(&mut fps, fps_option, format!("{} FPS", fps_option));
                     }
                 });
-            self.target_fps.store(fps, Relaxed);
-        });
+                ui.separator();
+                ui.heading("Emulator");
 
-        let running = self.running.load(Relaxed);
-        if ui.button(if running { "Pause" } else { "Run" }).clicked() {
-            self.running.store(!running, Relaxed);
-        }
+                // --- Start of Emulator Settings Grid ---
+                let mut ips = self.target_ips.load(Relaxed);
+                let mut fps = self.target_fps.load(Relaxed);
 
-        ui.separator();
-        ui.label("Display");
-        ui.add(egui::Slider::new(&mut self.game_scale, 1.0..=32.0).text("Game Scale"));
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("On Pixel: ").text_style(TextStyle::Monospace));
-            ui.color_edit_button_srgba(&mut self.on_pixel_color);
-        });
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Off Pixel:").text_style(TextStyle::Monospace));
-            ui.color_edit_button_srgba(&mut self.off_pixel_color);
-        });
+                egui::Grid::new("emulator_settings_grid")
+                    .num_columns(2)
+                    .spacing([40.0, 4.0]) // [column_spacing, row_spacing]
+                    .show(ui, |ui| {
+                        // Row 1: Target IPS
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            ui.label("Target IPS");
+                        });
+                        ui.add(egui::Slider::new(&mut ips, 1..=100_000));
+                        ui.end_row();
+
+                        // Row 2: Target FPS
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            ui.label("Target FPS");
+                        });
+                        const FPS_OPTIONS: &[u32] = &[30, 60, 120, 144, 240];
+                        egui::ComboBox::new("fps_select", "")
+                            .selected_text(format!("{} FPS", fps))
+                            .show_ui(ui, |ui| {
+                                for &fps_option in FPS_OPTIONS {
+                                    ui.selectable_value(
+                                        &mut fps,
+                                        fps_option,
+                                        format!("{} FPS", fps_option),
+                                    );
+                                }
+                            });
+                        ui.end_row();
+                    });
+
+                self.target_ips.store(ips, Relaxed);
+                self.target_fps.store(fps, Relaxed);
+                // --- End of Emulator Settings Grid ---
+
+                ui.separator();
+                ui.heading("Display");
+
+                // --- Start of Display Settings Grid ---
+                egui::Grid::new("display_settings_grid")
+                    .num_columns(2)
+                    .spacing([20.0, 4.0])
+                    .show(ui, |ui| {
+                        // Row 1: Game Scale
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            ui.label("Game Scale");
+                        });
+                        ui.add(egui::Slider::new(&mut self.game_scale, 1.0..=32.0));
+                        ui.end_row();
+
+                        // Row 2: On Pixel Color
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            ui.label("On Pixel: ");
+                        });
+                        ui.color_edit_button_srgba(&mut self.on_pixel_color);
+                        ui.end_row();
+
+                        // Row 3: Off Pixel Color
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            ui.label("Off Pixel:");
+                        });
+                        ui.color_edit_button_srgba(&mut self.off_pixel_color);
+                        ui.end_row();
+                    });
+            });
     }
 
     fn render_info_panel(&self, ui: &mut egui::Ui) {
-        ui.heading("Emulator Info");
+        egui::CollapsingHeader::new("Emulator Info")
+            .default_open(true)
+            .show(ui, |ui| {
+                let frame_time = self.last_frame.elapsed();
+                let fps = 1.0 / frame_time.as_secs_f64();
+                let state = if self.running.load(Relaxed) {
+                    "Running"
+                } else {
+                    "Stopped"
+                };
+                let instructions = self.instruction_counter.load(Relaxed);
 
-        let frame_time = self.last_frame.elapsed();
-        let fps = 1.0 / frame_time.as_secs_f64();
-        let state = if self.running.load(Relaxed) {
-            "Running"
-        } else {
-            "Stopped"
-        };
-        let instructions = self.instruction_counter.load(Relaxed);
+                egui::Grid::new("info_grid").num_columns(2).show(ui, |ui| {
+                    ui.label("GUI FPS:");
+                    ui.label(format!("{:.1}", fps));
+                    ui.end_row();
 
-        egui::Grid::new("info_grid").num_columns(2).show(ui, |ui| {
-            ui.label("GUI FPS:");
-            ui.label(format!("{:.1}", fps));
-            ui.end_row();
+                    ui.label("Frame Time:");
+                    ui.label(format!("{} ms", frame_time.as_millis()));
+                    ui.end_row();
 
-            ui.label("Frame Time:");
-            ui.label(format!("{} ms", frame_time.as_millis()));
-            ui.end_row();
+                    ui.label("Current State:");
+                    ui.label(state);
+                    ui.end_row();
 
-            ui.label("Current State:");
-            ui.label(state);
-            ui.end_row();
+                    ui.label("Instructions Executed:");
+                    ui.label(format!("{instructions}"));
+                    ui.end_row();
 
-            ui.label("Instructions Executed:");
-            ui.label(format!("{instructions}"));
-            ui.end_row();
-
-            ui.label("Audio Status:");
-            ui.label(
-                RichText::new(if self.sink.is_paused() { "OK" } else { "BEEP" })
-                    .color(Color32::LIGHT_GREEN),
-            );
-            ui.end_row();
-        });
+                    ui.label("Audio Status:");
+                    ui.label(
+                        RichText::new(if self.sink.is_paused() { "OK" } else { "BEEP" })
+                            .color(Color32::LIGHT_GREEN),
+                    );
+                    ui.end_row();
+                });
+            });
     }
 
     fn render_game_screen(&mut self, ui: &mut egui::Ui) {
