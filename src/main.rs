@@ -32,7 +32,10 @@ fn render_screen(screen: &Screen, on_color: Color32, off_color: Color32) -> egui
 }
 
 impl DebuggerApp {
-    fn new(cc: &eframe::CreationContext, rom: Option<Vec<u8>>) -> Self {
+    fn new(cc: &eframe::CreationContext, rom_path: Option<String>) -> Self {
+        let rom = rom_path
+            .as_ref()
+            .map(|path| std::fs::read(path).expect("Failed to read ROM from path"));
         let (state_tx, state_rx) = std::sync::mpsc::sync_channel(1);
         let (rom_tx, rom_rx) = std::sync::mpsc::channel::<Vec<u8>>();
         let keypad = Keypad::default();
@@ -110,6 +113,7 @@ impl DebuggerApp {
             display_texture,
             _stream: stream,
             sink,
+            rom_path,
             on_pixel_color,
             off_pixel_color,
             game_scale: 16.0,
@@ -161,6 +165,12 @@ impl DebuggerApp {
                 keypad
             })
         })
+    }
+
+    fn render_rom_info(ui: &mut egui::Ui, rom: &str) {
+        egui::CollapsingHeader::new("Rom Info")
+            .default_open(true)
+            .show(ui, |ui| ui.label(rom));
     }
 
     /// Renders the 16 V-registers
@@ -320,6 +330,11 @@ impl DebuggerApp {
                                         eprintln!("Failed to send ROM to emulator thread: {}", e);
                                     }
                                     self.running.store(true, Relaxed);
+                                    self.rom_path = Some(
+                                        path.into_os_string()
+                                            .into_string()
+                                            .expect("Use UTF-8 filenames."),
+                                    );
                                 }
                                 Err(e) => {
                                     eprintln!("Failed to read ROM file {:?}: {}", path, e);
@@ -464,6 +479,7 @@ struct DebuggerApp {
     display_texture: egui::TextureHandle,
     _stream: OutputStream,
     sink: Sink,
+    rom_path: Option<String>,
 
     // Stats
     last_frame: Instant,
@@ -487,6 +503,8 @@ impl eframe::App for DebuggerApp {
             .resizable(true)
             .default_width(250.0)
             .show(ctx, |ui| {
+                Self::render_rom_info(ui, &self.rom_path.as_deref().unwrap_or("None"));
+                ui.separator();
                 self.render_info_panel(ui);
                 ui.separator();
                 self.render_register_viewer(ui, &self.last_state);
@@ -511,9 +529,7 @@ impl eframe::App for DebuggerApp {
 }
 
 fn main() -> eframe::Result {
-    let rom = std::env::args()
-        .nth(1)
-        .map(|path| std::fs::read(path).expect("Failed to read ROM from path"));
+    let rom = std::env::args().nth(1);
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size(egui::Vec2::new(1920.0, 1080.0))
