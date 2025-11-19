@@ -1,4 +1,5 @@
 use rand::prelude::*;
+use std::fmt::{self, Display};
 use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::atomic::{AtomicU16, AtomicU32};
@@ -60,6 +61,10 @@ impl CPU {
 
     pub fn is_beep(&self) -> bool {
         self.sound_timer.get() > 0
+    }
+
+    pub fn get_registers(&self) -> &Registers {
+        &self.registers
     }
 
     pub fn get_register(&self, register: Register) -> u8 {
@@ -236,7 +241,7 @@ impl CPU {
 
     pub fn tick(&mut self) {
         let instruction = self.fetch();
-        let instruction = Instruction::decode(instruction);
+        let instruction = Instruction::decode(instruction).unwrap();
         self.pc = std::cmp::min(self.execute(instruction), self.memory.0.len() as u16 - 2);
     }
 
@@ -276,10 +281,10 @@ impl Default for Screen {
 }
 
 #[derive(Default, Debug, Clone)]
-struct Registers([u8; 16]);
+pub struct Registers([u8; 16]);
 
 impl Registers {
-    fn get(&self, register: Register) -> u8 {
+    pub fn get(&self, register: Register) -> u8 {
         self.0[register as u8 as usize]
     }
 
@@ -331,7 +336,7 @@ impl Timer {
 }
 
 #[derive(Debug)]
-enum Cond {
+pub enum Cond {
     /// VX equals NN
     Eq(Register, u8),
     /// VX does not equal NN
@@ -342,8 +347,19 @@ enum Cond {
     NeqReg(Register, Register),
 }
 
+impl Display for Cond {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Cond::Eq(vx, nn) => write!(f, "{vx} == 0x{nn:02X}"),
+            Cond::Neq(vx, nn) => write!(f, "{vx} != 0x{nn:02X}"),
+            Cond::EqReg(vx, vy) => write!(f, "{vx} == {vy}"),
+            Cond::NeqReg(vx, vy) => write!(f, "{vx} != {vy}"),
+        }
+    }
+}
+
 #[derive(Debug)]
-enum Instruction {
+pub enum Instruction {
     /// Adds NN to VX (carry flag is not changed).
     Add(Register, u8),
     /// Adds VX to I. VF is not affected.
@@ -418,52 +434,95 @@ enum Instruction {
 }
 
 impl Instruction {
-    fn decode(opcode: u16) -> Self {
+    pub fn decode(opcode: u16) -> Option<Self> {
         use Instruction::*;
+
         let nib1 = (opcode >> 12) as u8;
         let nib2 = (opcode >> 8) as u8 & 0xF;
         let addr = opcode & 0x0FFF;
-        let x = Register::from_repr(nib2).unwrap();
-        let y = Register::from_repr((opcode as u8) >> 4).unwrap();
+        let x = Register::from_repr(nib2)?;
+        let y = Register::from_repr((opcode as u8) >> 4)?;
+
         let nn = opcode as u8;
         let n = nn & 0xF;
         match nib1 {
-            0x0 if opcode == 0x00E0 => DisplayClear,
-            0x0 if opcode == 0x00EE => Return,
-            0x0 => Call(addr),
-            0x1 => Jump(opcode & 0x0FFF),
-            0x2 => CallSubroutine(addr),
-            0x3 => CondSkip(Cond::Eq(x, nn)),
-            0x4 => CondSkip(Cond::Neq(x, nn)),
-            0x5 if n == 0x0 => CondSkip(Cond::EqReg(x, y)),
-            0x6 => SetRegister(x, opcode as u8),
-            0x7 => Add(x, opcode as u8),
-            0x8 if n == 0x0 => Assign(x, y),
-            0x8 if n == 0x1 => Or(x, y),
-            0x8 if n == 0x2 => And(x, y),
-            0x8 if n == 0x3 => Xor(x, y),
-            0x8 if n == 0x4 => AddReg(x, y),
-            0x8 if n == 0x5 => Subtract(x, y),
-            0x8 if n == 0x6 => ShiftRight(x, y),
-            0x8 if n == 0x7 => SubtractOther(x, y),
-            0x8 if n == 0xe => ShiftLeft(x, y),
-            0x9 if n == 0x0 => CondSkip(Cond::NeqReg(x, y)),
-            0xA => SetIndex(addr),
-            0xB => JumpOffset(addr),
-            0xC => Rand(x, nn),
-            0xD => Display(x, y, n),
-            0xE if nn == 0x9E => SkipIfKey(x),
-            0xE if nn == 0xA1 => SkipIfNotKey(x),
-            0xF if nn == 0x07 => GetDelay(x),
-            0xF if nn == 0x0A => GetKey(x),
-            0xF if nn == 0x15 => SetDelay(x),
-            0xF if nn == 0x18 => SetSound(x),
-            0xF if nn == 0x1E => AddIndex(x),
-            0xF if nn == 0x29 => FontCharacter(x),
-            0xF if nn == 0x33 => BinaryDecimalConversion(x),
-            0xF if nn == 0x55 => StoreMemory(x),
-            0xF if nn == 0x65 => LoadMemory(x),
-            _ => panic!("Unknown opcode: 0x{:04x}", opcode),
+            0x0 if opcode == 0x00E0 => Some(DisplayClear),
+            0x0 if opcode == 0x00EE => Some(Return),
+            0x0 => Some(Call(addr)), // Legacy SYS instruction
+            0x1 => Some(Jump(opcode & 0x0FFF)),
+            0x2 => Some(CallSubroutine(addr)),
+            0x3 => Some(CondSkip(Cond::Eq(x, nn))),
+            0x4 => Some(CondSkip(Cond::Neq(x, nn))),
+            0x5 if n == 0x0 => Some(CondSkip(Cond::EqReg(x, y))),
+            0x6 => Some(SetRegister(x, opcode as u8)),
+            0x7 => Some(Add(x, opcode as u8)),
+            0x8 if n == 0x0 => Some(Assign(x, y)),
+            0x8 if n == 0x1 => Some(Or(x, y)),
+            0x8 if n == 0x2 => Some(And(x, y)),
+            0x8 if n == 0x3 => Some(Xor(x, y)),
+            0x8 if n == 0x4 => Some(AddReg(x, y)),
+            0x8 if n == 0x5 => Some(Subtract(x, y)),
+            0x8 if n == 0x6 => Some(ShiftRight(x, y)),
+            0x8 if n == 0x7 => Some(SubtractOther(x, y)),
+            0x8 if n == 0xe => Some(ShiftLeft(x, y)),
+            0x9 if n == 0x0 => Some(CondSkip(Cond::NeqReg(x, y))),
+            0xA => Some(SetIndex(addr)),
+            0xB => Some(JumpOffset(addr)),
+            0xC => Some(Rand(x, nn)),
+            0xD => Some(Display(x, y, n)),
+            0xE if nn == 0x9E => Some(SkipIfKey(x)),
+            0xE if nn == 0xA1 => Some(SkipIfNotKey(x)),
+            0xF if nn == 0x07 => Some(GetDelay(x)),
+            0xF if nn == 0x0A => Some(GetKey(x)),
+            0xF if nn == 0x15 => Some(SetDelay(x)),
+            0xF if nn == 0x18 => Some(SetSound(x)),
+            0xF if nn == 0x1E => Some(AddIndex(x)),
+            0xF if nn == 0x29 => Some(FontCharacter(x)),
+            0xF if nn == 0x33 => Some(BinaryDecimalConversion(x)),
+            0xF if nn == 0x55 => Some(StoreMemory(x)),
+            0xF if nn == 0x65 => Some(LoadMemory(x)),
+            _ => None,
+        }
+    }
+}
+
+impl Display for Instruction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use Instruction::*;
+
+        match self {
+            Add(vx, val) => write!(f, "ADD {vx}, 0x{val:02X}"),
+            AddIndex(vx) => write!(f, "ADD I, {vx}"),
+            AddReg(vx, vy) => write!(f, "ADD {vx}, {vy}"),
+            And(vx, vy) => write!(f, "AND {vx}, {vy}"),
+            Assign(vx, vy) => write!(f, "LD {vx}, {vy}"),
+            BinaryDecimalConversion(vx) => write!(f, "LD B, {vx}"),
+            Call(addr) => write!(f, "SYS 0x{addr:03X}"), // CHIP-8 legacy op
+            CallSubroutine(addr) => write!(f, "CALL 0x{addr:03X}"),
+            CondSkip(cond) => write!(f, "SE {cond}"), // Assuming SE/SNE is handled by Cond
+            DisplayClear => write!(f, "CLS"),
+            Display(vx, vy, height) => write!(f, "DRW {vx}, {vy}, 0x{height:X}"),
+            FontCharacter(vx) => write!(f, "LD F, {vx}"),
+            GetDelay(vx) => write!(f, "LD {vx}, DT"),
+            GetKey(vx) => write!(f, "LD {vx}, K"),
+            Jump(addr) => write!(f, "JP 0x{addr:03X}"),
+            JumpOffset(addr) => write!(f, "JP V0, 0x{addr:03X}"),
+            LoadMemory(vx) => write!(f, "LD {vx}, [I]"),
+            Or(vx, vy) => write!(f, "OR {vx}, {vy}"),
+            Rand(vx, nn) => write!(f, "RND {vx}, 0x{nn:02X}"),
+            Return => write!(f, "RET"),
+            SetDelay(vx) => write!(f, "LD DT, {vx}"),
+            SetIndex(val) => write!(f, "LD I, 0x{val:03X}"),
+            SetRegister(vx, val) => write!(f, "LD {vx}, 0x{val:02X}"),
+            SetSound(vx) => write!(f, "LD ST, {vx}"),
+            ShiftLeft(vx, _vy) => write!(f, "SHL {vx}"),
+            ShiftRight(vx, _vy) => write!(f, "SHR {vx}"),
+            SkipIfKey(vx) => write!(f, "SKP {vx}"),
+            SkipIfNotKey(vx) => write!(f, "SKNP {vx}"),
+            StoreMemory(vx) => write!(f, "LD [I], {vx}"),
+            Subtract(vx, vy) => write!(f, "SUB {vx}, {vy}"),
+            SubtractOther(vx, vy) => write!(f, "SUBN {vx}, {vy}"),
+            Xor(vx, vy) => write!(f, "XOR {vx}, {vy}"),
         }
     }
 }

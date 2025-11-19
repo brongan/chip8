@@ -13,7 +13,30 @@ use std::thread;
 use std::time::{Duration, Instant};
 use strum::IntoEnumIterator;
 
-use chip8::{CPU, Emulator, Keypad, Register, Screen};
+use chip8::{CPU, Emulator, Instruction, Keypad, Register, Registers, Screen};
+
+struct DebuggerApp {
+    state_rx: Receiver<CPU>,
+    rom_tx: Sender<Vec<u8>>,
+    last_state: CPU,
+    keypad: Keypad,
+    display_texture: egui::TextureHandle,
+    _stream: OutputStream,
+    sink: Sink,
+    rom_path: Option<String>,
+
+    // Stats
+    last_frame: Instant,
+    instruction_counter: Arc<AtomicU64>,
+
+    // Settings
+    on_pixel_color: Color32,
+    off_pixel_color: Color32,
+    game_scale: f32,
+    target_ips: Arc<AtomicU32>,
+    target_fps: Arc<AtomicU32>,
+    running: Arc<AtomicBool>,
+}
 
 /// Renders the 64x32 screen state into a displayable image
 fn render_screen(screen: &Screen, on_color: Color32, off_color: Color32) -> egui::ColorImage {
@@ -167,15 +190,8 @@ impl DebuggerApp {
         })
     }
 
-    fn render_rom_info(ui: &mut egui::Ui, rom: &str) {
-        egui::CollapsingHeader::new("Rom Info")
-            .default_open(true)
-            .show(ui, |ui| ui.label(rom));
-    }
-
-    /// Renders the 16 V-registers
-    fn render_register_viewer(&self, ui: &mut egui::Ui, cpu: &CPU) {
-        egui::CollapsingHeader::new("Register Viewer")
+    fn render_cpu_state(&self, ui: &mut egui::Ui, cpu: &CPU) {
+        egui::CollapsingHeader::new("Chip-8 CPU State")
             .default_open(true)
             .show(ui, |ui| {
                 egui::Grid::new("register_grid")
@@ -198,41 +214,53 @@ impl DebuggerApp {
                         }
                     });
 
+                Self::render_registers(
+                    ui,
+                    cpu.get_pc(),
+                    cpu.fetch(),
+                    cpu.get_index(),
+                    cpu.get_delay_timer(),
+                    cpu.get_sound_timer(),
+                    cpu.get_registers(),
+                );
                 ui.separator();
 
-                egui::Grid::new("special_registers")
-                    .num_columns(2)
-                    .spacing([10.0, 4.0])
-                    .striped(true)
-                    .show(ui, |ui| {
-                        ui.style_mut().override_text_style = Some(TextStyle::Monospace);
-                        ui.spacing_mut().item_spacing.x = 2.0;
-                        ui.label(RichText::new("PC"));
-                        ui.label(RichText::new(format!("0x{:04X}", cpu.get_pc())));
-
-                        ui.end_row();
-
-                        ui.label(RichText::new("IR"));
-                        ui.label(RichText::new(format!("0x{:04X}", cpu.fetch())));
-                        ui.end_row();
-
-                        ui.label(RichText::new("I"));
-                        ui.label(RichText::new(format!("0x{:04X}", cpu.get_index())));
-                        ui.end_row();
-
-                        ui.label(RichText::new("Delay"));
-                        ui.label(RichText::new(format!("{}", cpu.get_delay_timer())));
-                        ui.end_row();
-
-                        ui.label(RichText::new("Sound"));
-                        ui.label(RichText::new(format!("{}", cpu.get_sound_timer())));
-                        ui.end_row();
-                    });
+                Self::render_stack(ui, &cpu.get_stack());
             });
     }
 
-    /// Renders the CPU stack
-    fn render_stack_viewer(&self, ui: &mut egui::Ui, cpu: &CPU) {
+    fn render_registers(
+        ui: &mut egui::Ui,
+        pc: u16,
+        ir: u16,
+        index: u16,
+        delay: u8,
+        sound: u8,
+        registers: &Registers,
+    ) {
+        egui::Grid::new("special_registers").show(ui, |ui| {
+            ui.style_mut().override_text_style = Some(TextStyle::Monospace);
+            ui.label(format!("PC\n0x{pc:04X}\n{pc}"));
+            ui.label(format!("IR\n0x{ir:04X}\n{ir}"));
+            ui.label(format!("I\n0x{index:04X}\n{index}"));
+            ui.label(format!("DT (delay)\n0x{delay:04X}\n{delay}"));
+            ui.label(format!("ST (sound)\n0x{sound:04X}\n{sound}"));
+        });
+
+        egui::Grid::new("registers").show(ui, |ui| {
+            for row in Register::iter().array_chunks::<8>() {
+                for reg in row {
+                    let val = registers.get(reg);
+                    ui.label(format!("{reg}\n0x{val:02X}\n{val}"));
+                }
+                ui.end_row();
+            }
+        });
+    }
+
+    fn render_stack(ui: &mut egui::Ui, stack: &[u16]) {
+        let sp = stack.len();
+        ui.label(format!("SP: 0x{:04X} {}", sp, sp));
         egui::CollapsingHeader::new("Stack Viewer")
             .default_open(true)
             .show(ui, |ui| {
@@ -245,7 +273,7 @@ impl DebuggerApp {
                             ui.label(RichText::new("Contents").strong());
                             ui.end_row();
 
-                            for (i, &addr) in cpu.get_stack().iter().enumerate().rev() {
+                            for (i, &addr) in stack.iter().enumerate().rev() {
                                 ui.label(format!("{}", i));
                                 ui.label(
                                     RichText::new(format!("0x{:04X}", addr))
@@ -258,7 +286,7 @@ impl DebuggerApp {
             });
     }
 
-    fn render_memory_viewer(&self, ui: &mut egui::Ui, cpu: &CPU) {
+    fn render_memory(&self, ui: &mut egui::Ui, cpu: &CPU) {
         egui::CollapsingHeader::new("Memory Viewer")
             .default_open(true)
             .show(ui, |ui| {
@@ -417,7 +445,7 @@ impl DebuggerApp {
     }
 
     fn render_info_panel(&self, ui: &mut egui::Ui) {
-        egui::CollapsingHeader::new("Emulator Info")
+        egui::CollapsingHeader::new("Chip-8 Emulator Info")
             .default_open(true)
             .show(ui, |ui| {
                 let frame_time = self.last_frame.elapsed();
@@ -430,6 +458,10 @@ impl DebuggerApp {
                 let instructions = self.instruction_counter.load(Relaxed);
 
                 egui::Grid::new("info_grid").num_columns(2).show(ui, |ui| {
+                    ui.label("ROM:");
+                    ui.label(self.rom_path.as_deref().unwrap_or("None"));
+                    ui.end_row();
+
                     ui.label("GUI FPS:");
                     ui.label(format!("{:.1}", fps));
                     ui.end_row();
@@ -469,29 +501,32 @@ impl DebuggerApp {
             ui.add(image);
         });
     }
-}
 
-struct DebuggerApp {
-    state_rx: Receiver<CPU>,
-    rom_tx: Sender<Vec<u8>>,
-    last_state: CPU,
-    keypad: Keypad,
-    display_texture: egui::TextureHandle,
-    _stream: OutputStream,
-    sink: Sink,
-    rom_path: Option<String>,
+    fn render_disassembler(ui: &mut egui::Ui, cpu: &CPU) {
+        egui::CollapsingHeader::new("Memory Viewer")
+            .default_open(true)
+            .show(ui, |ui| {
+                ScrollArea::vertical().show(ui, |ui| {
+                    egui::Grid::new("disassembler").show(ui, |ui| {
+                        let instruction_stream = ((cpu.get_pc() as usize)..cpu.get_memory().len())
+                            .step_by(2)
+                            .filter_map(|addr| {
+                                let instruction = (cpu.get_memory()[addr] as u16) << 8
+                                    | cpu.get_memory()[addr + 1] as u16;
+                                Instruction::decode(instruction)
+                                    .map(|inst| (addr, instruction, inst))
+                            });
 
-    // Stats
-    last_frame: Instant,
-    instruction_counter: Arc<AtomicU64>,
-
-    // Settings
-    on_pixel_color: Color32,
-    off_pixel_color: Color32,
-    game_scale: f32,
-    target_ips: Arc<AtomicU32>,
-    target_fps: Arc<AtomicU32>,
-    running: Arc<AtomicBool>,
+                        for (addr, instruction, decoded) in instruction_stream {
+                            ui.label(format!("0x{addr:04x}"));
+                            ui.label(format!("{instruction:04x}"));
+                            ui.label(format!("{decoded}"));
+                            ui.end_row();
+                        }
+                    });
+                });
+            });
+    }
 }
 
 impl eframe::App for DebuggerApp {
@@ -503,26 +538,24 @@ impl eframe::App for DebuggerApp {
             .resizable(true)
             .default_width(250.0)
             .show(ctx, |ui| {
-                Self::render_rom_info(ui, &self.rom_path.as_deref().unwrap_or("None"));
-                ui.separator();
                 self.render_info_panel(ui);
                 ui.separator();
-                self.render_register_viewer(ui, &self.last_state);
+                self.render_cpu_state(ui, &self.last_state);
                 ui.separator();
-                self.render_stack_viewer(ui, &self.last_state);
+                self.render_settings_panel(ui);
             });
 
         SidePanel::right("right_panel")
             .resizable(true)
             .default_width(200.0)
             .show(ctx, |ui| {
-                self.render_settings_panel(ui);
+                Self::render_disassembler(ui, &self.last_state);
             });
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Game Display Window");
             self.render_game_screen(ui);
             ui.separator();
-            self.render_memory_viewer(ui, &self.last_state);
+            self.render_memory(ui, &self.last_state);
         });
         self.last_frame = Instant::now();
     }
