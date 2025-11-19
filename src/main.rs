@@ -264,11 +264,11 @@ impl DebuggerApp {
                             } else {
                                 Color32::LIGHT_GREEN
                             };
+                            ui.colored_label(color, format!("0x{:04X}", addr));
 
-                            ui.label(RichText::new(format!("0x{:04X}", addr)).color(color));
                             ui.add(egui::Separator::default().vertical().shrink(10.0));
                             for byte in chunk {
-                                ui.label(RichText::new(format!("{:02X}", byte)).color(color));
+                                ui.colored_label(color, format!("{:02X}", byte));
                             }
                             ui.add(egui::Separator::default().vertical().shrink(10.0));
                             ui.label(
@@ -432,9 +432,9 @@ impl DebuggerApp {
                     ui.end_row();
 
                     ui.label("Audio Status:");
-                    ui.label(
-                        RichText::new(if self.sink.is_paused() { "OK" } else { "BEEP" })
-                            .color(Color32::LIGHT_GREEN),
+                    ui.colored_label(
+                        Color32::LIGHT_GREEN,
+                        if self.sink.is_paused() { "OK" } else { "BEEP" },
                     );
                     ui.end_row();
                 });
