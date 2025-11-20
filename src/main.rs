@@ -194,25 +194,7 @@ impl DebuggerApp {
         egui::CollapsingHeader::new("Chip-8 CPU State")
             .default_open(true)
             .show(ui, |ui| {
-                egui::Grid::new("register_grid")
-                    .num_columns(4)
-                    .spacing([10.0, 4.0])
-                    .striped(true)
-                    .show(ui, |ui| {
-                        for row in Register::iter().array_chunks::<2>() {
-                            for reg in row {
-                                ui.label(
-                                    RichText::new(format!("{reg}"))
-                                        .text_style(TextStyle::Monospace),
-                                );
-                                ui.label(
-                                    RichText::new(format!("0x{:02X}", cpu.get_register(reg)))
-                                        .text_style(TextStyle::Monospace),
-                                );
-                            }
-                            ui.end_row();
-                        }
-                    });
+                ui.style_mut().override_text_style = Some(TextStyle::Monospace);
 
                 Self::render_registers(
                     ui,
