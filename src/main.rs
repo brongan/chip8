@@ -1,14 +1,15 @@
 #![feature(iter_array_chunks)]
+use anyhow::anyhow;
 use eframe::egui::{
-    self, Align, Button, Color32, Frame, Key, Layout, RichText, ScrollArea, SidePanel, TextStyle,
-    Vec2,
+    self, Align, Button, CentralPanel, Color32, Frame, Key, Layout, RichText, ScrollArea,
+    SidePanel, TextStyle, TopBottomPanel, Vec2,
 };
 use rodio::{OutputStream, Sink, Source};
 use spin_sleep::sleep;
-use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use strum::IntoEnumIterator;
@@ -23,7 +24,7 @@ struct DebuggerApp {
     display_texture: egui::TextureHandle,
     _stream: OutputStream,
     sink: Sink,
-    rom_path: Option<String>,
+    rom_path: Arc<Mutex<Option<String>>>,
 
     // Stats
     last_frame: Instant,
@@ -136,7 +137,7 @@ impl DebuggerApp {
             display_texture,
             _stream: stream,
             sink,
-            rom_path,
+            rom_path: Arc::new(Mutex::new(rom_path)),
             on_pixel_color,
             off_pixel_color,
             game_scale: 16.0,
@@ -242,7 +243,7 @@ impl DebuggerApp {
 
     fn render_stack(ui: &mut egui::Ui, stack: &[u16]) {
         let sp = stack.len();
-        ui.label(format!("SP: 0x{:04X} {}", sp, sp));
+        ui.label(format!("SP: 0x{sp:04X} {sp}"));
         egui::CollapsingHeader::new("Stack Viewer")
             .default_open(true)
             .show(ui, |ui| {
@@ -268,46 +269,76 @@ impl DebuggerApp {
             });
     }
 
-    fn render_memory(&self, ui: &mut egui::Ui, cpu: &CPU) {
+    fn render_memory(ui: &mut egui::Ui, cpu: &CPU) {
         egui::CollapsingHeader::new("Memory Viewer")
             .default_open(true)
             .show(ui, |ui| {
-                ScrollArea::vertical().show(ui, |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.style_mut().override_text_style = Some(TextStyle::Monospace);
-                        ui.spacing_mut().item_spacing.x = 2.0;
+                ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        egui::Grid::new("memory_grid")
+                            .spacing([15.0, 1.0])
+                            .striped(true)
+                            .show(ui, |ui| {
+                                ui.style_mut().override_text_style = Some(TextStyle::Monospace);
+                                ui.spacing_mut().item_spacing.x = 2.0;
 
-                        for (i, chunk) in cpu.get_memory().chunks(16).enumerate() {
-                            let addr = i * 16;
-                            let color = if (addr..addr + 16).contains(&(cpu.get_pc() as usize)) {
-                                Color32::YELLOW
-                            } else {
-                                Color32::LIGHT_GREEN
-                            };
-                            ui.colored_label(color, format!("0x{:04X}", addr));
+                                for (i, chunk) in cpu.get_memory().chunks(16).enumerate() {
+                                    let addr = i * 16;
+                                    let color =
+                                        if (addr..addr + 16).contains(&(cpu.get_pc() as usize)) {
+                                            Color32::YELLOW
+                                        } else {
+                                            Color32::LIGHT_GREEN
+                                        };
+                                    let binary = chunk
+                                        .into_iter()
+                                        .map(|byte| format!("{:02X}", byte))
+                                        .collect::<String>();
 
-                            ui.add(egui::Separator::default().vertical().shrink(10.0));
-                            for byte in chunk {
-                                ui.colored_label(color, format!("{:02X}", byte));
-                            }
-                            ui.add(egui::Separator::default().vertical().shrink(10.0));
-                            ui.label(
-                                RichText::new(
-                                    chunk
+                                    let ascii_art = chunk
                                         .iter()
                                         .map(|&b| match b {
                                             b' '..=b'~' => b as char,
                                             _ => '.',
                                         })
-                                        .collect::<String>(),
-                                )
-                                .color(color),
-                            );
-                            ui.end_row();
-                        }
+                                        .collect::<String>();
+
+                                    ui.colored_label(color, format!("0x{:04X}", addr));
+                                    ui.colored_label(color, binary);
+                                    ui.colored_label(color, ascii_art);
+                                    ui.end_row();
+                                }
+                            });
                     });
-                });
             });
+    }
+
+    fn handle_rom_dialog(
+        rom_tx: Sender<Vec<u8>>,
+        running: Arc<AtomicBool>,
+        rom_path: Arc<Mutex<Option<String>>>,
+    ) -> anyhow::Result<()> {
+        let path = rfd::FileDialog::new()
+            .add_filter("CHIP-8 ROM", &["ch8", "rom"])
+            .add_filter("All Files", &["*"])
+            .pick_file()
+            .ok_or(anyhow!("File dialog did not result in file path."))?;
+
+        let rom_data = std::fs::read(&path).map_err(|e| anyhow!("Failed to load ROM: {e}"))?;
+        rom_tx
+            .send(rom_data)
+            .map_err(|e| anyhow!("Failed to send ROM to emulator thread: {}", e))?;
+        running.store(true, Relaxed);
+        let mut rom_path = rom_path
+            .lock()
+            .map_err(|e| anyhow!("Failed to lock rom_path: {e}"))?;
+        *rom_path = Some(
+            path.into_os_string()
+                .into_string()
+                .expect("Use UTF-8 filenames."),
+        );
+        Ok(())
     }
 
     fn render_settings_panel(&mut self, ui: &mut egui::Ui) {
@@ -329,34 +360,15 @@ impl DebuggerApp {
                     }
 
                     if ui.add(load_button).clicked() {
-                        if let Some(path) = rfd::FileDialog::new()
-                            .add_filter("CHIP-8 ROM", &["ch8", "rom"])
-                            .add_filter("All Files", &["*"])
-                            .pick_file()
-                        {
-                            match std::fs::read(&path) {
-                                Ok(rom_data) => {
-                                    if let Err(e) = self.rom_tx.send(rom_data) {
-                                        eprintln!("Failed to send ROM to emulator thread: {}", e);
-                                    }
-                                    self.running.store(true, Relaxed);
-                                    self.rom_path = Some(
-                                        path.into_os_string()
-                                            .into_string()
-                                            .expect("Use UTF-8 filenames."),
-                                    );
-                                }
-                                Err(e) => {
-                                    eprintln!("Failed to read ROM file {:?}: {}", path, e);
-                                }
-                            }
-                        }
+                        let rom_tx = self.rom_tx.clone();
+                        let running = self.running.clone();
+                        let rom_path = self.rom_path.clone();
+                        thread::spawn(move || Self::handle_rom_dialog(rom_tx, running, rom_path));
                     }
                 });
                 ui.separator();
                 ui.heading("Emulator");
 
-                // --- Start of Emulator Settings Grid ---
                 let mut ips = self.target_ips.load(Relaxed);
                 let mut fps = self.target_fps.load(Relaxed);
 
@@ -392,12 +404,10 @@ impl DebuggerApp {
 
                 self.target_ips.store(ips, Relaxed);
                 self.target_fps.store(fps, Relaxed);
-                // --- End of Emulator Settings Grid ---
 
                 ui.separator();
                 ui.heading("Display");
 
-                // --- Start of Display Settings Grid ---
                 egui::Grid::new("display_settings_grid")
                     .num_columns(2)
                     .spacing([20.0, 4.0])
@@ -440,8 +450,15 @@ impl DebuggerApp {
                 let instructions = self.instruction_counter.load(Relaxed);
 
                 egui::Grid::new("info_grid").num_columns(2).show(ui, |ui| {
+                    let rom = self
+                        .rom_path
+                        .lock()
+                        .unwrap()
+                        .as_deref()
+                        .unwrap_or("None")
+                        .to_owned();
                     ui.label("ROM:");
-                    ui.label(self.rom_path.as_deref().unwrap_or("None"));
+                    ui.label(rom);
                     ui.end_row();
 
                     ui.label("GUI FPS:");
@@ -475,8 +492,6 @@ impl DebuggerApp {
         let image = render_screen(screen, self.on_pixel_color, self.off_pixel_color);
         self.display_texture
             .set(image, egui::TextureOptions::NEAREST);
-
-        // Wrap the game in a frame
         Frame::dark_canvas(ui.style()).show(ui, |ui| {
             let image =
                 egui::Image::new(&self.display_texture).fit_to_original_size(self.game_scale);
@@ -485,7 +500,7 @@ impl DebuggerApp {
     }
 
     fn render_disassembler(ui: &mut egui::Ui, cpu: &CPU) {
-        egui::CollapsingHeader::new("Memory Viewer")
+        egui::CollapsingHeader::new("Disassembly")
             .default_open(true)
             .show(ui, |ui| {
                 ScrollArea::vertical().show(ui, |ui| {
@@ -509,6 +524,14 @@ impl DebuggerApp {
                 });
             });
     }
+
+    fn render_controls(ui: &mut egui::Ui) {
+        ui.label("TODO Controls");
+    }
+
+    fn render_keyboard(ui: &mut egui::Ui, keypad: u16) {
+        ui.label(format!("TODO Keypad: {keypad}"));
+    }
 }
 
 impl eframe::App for DebuggerApp {
@@ -530,14 +553,22 @@ impl eframe::App for DebuggerApp {
         SidePanel::right("right_panel")
             .resizable(true)
             .default_width(200.0)
-            .show(ctx, |ui| {
-                Self::render_disassembler(ui, &self.last_state);
+            .show(ctx, |ui| Self::render_disassembler(ui, &self.last_state));
+
+        TopBottomPanel::top("top_panel").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                Self::render_controls(ui);
+                self.render_game_screen(ui);
             });
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Game Display Window");
-            self.render_game_screen(ui);
-            ui.separator();
-            self.render_memory(ui, &self.last_state);
+        });
+
+        CentralPanel::default().show(ctx, |ui| {
+            let available_height = ui.available_height();
+            ui.horizontal(|ui| {
+                ui.set_min_height(available_height);
+                Self::render_keyboard(ui, self.keypad.0.load(Relaxed));
+                Self::render_memory(ui, &self.last_state);
+            });
         });
         self.last_frame = Instant::now();
     }
