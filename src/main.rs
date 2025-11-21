@@ -194,7 +194,7 @@ impl DebuggerApp {
     fn render_cpu_state(&self, ui: &mut egui::Ui, cpu: &CPU) {
         egui::CollapsingHeader::new("Chip-8 CPU State")
             .default_open(true)
-            .show(ui, |ui| {
+            .show_unindented(ui, |ui| {
                 ui.style_mut().override_text_style = Some(TextStyle::Monospace);
 
                 Self::render_registers(
@@ -246,7 +246,7 @@ impl DebuggerApp {
         ui.label(format!("SP: 0x{sp:04X} {sp}"));
         egui::CollapsingHeader::new("Stack Viewer")
             .default_open(true)
-            .show(ui, |ui| {
+            .show_unindented(ui, |ui| {
                 ScrollArea::vertical().max_height(150.0).show(ui, |ui| {
                     egui::Grid::new("stack_grid")
                         .num_columns(2)
@@ -272,7 +272,7 @@ impl DebuggerApp {
     fn render_memory(ui: &mut egui::Ui, cpu: &CPU) {
         egui::CollapsingHeader::new("Memory Viewer")
             .default_open(true)
-            .show(ui, |ui| {
+            .show_unindented(ui, |ui| {
                 ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
@@ -344,7 +344,7 @@ impl DebuggerApp {
     fn render_settings_panel(&mut self, ui: &mut egui::Ui) {
         egui::CollapsingHeader::new("Settings Menu")
             .default_open(true)
-            .show(ui, |ui| {
+            .show_unindented(ui, |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(2.0, 2.0);
 
                 ui.horizontal(|ui| {
@@ -439,7 +439,7 @@ impl DebuggerApp {
     fn render_info_panel(&self, ui: &mut egui::Ui) {
         egui::CollapsingHeader::new("Chip-8 Emulator Info")
             .default_open(true)
-            .show(ui, |ui| {
+            .show_unindented(ui, |ui| {
                 let frame_time = self.last_frame.elapsed();
                 let fps = 1.0 / frame_time.as_secs_f64();
                 let state = if self.running.load(Relaxed) {
@@ -502,7 +502,7 @@ impl DebuggerApp {
     fn render_disassembler(ui: &mut egui::Ui, cpu: &CPU) {
         egui::CollapsingHeader::new("Disassembly")
             .default_open(true)
-            .show(ui, |ui| {
+            .show_unindented(ui, |ui| {
                 ScrollArea::vertical().show(ui, |ui| {
                     egui::Grid::new("disassembler").show(ui, |ui| {
                         let instruction_stream = ((cpu.get_pc() as usize)..cpu.get_memory().len())
@@ -523,10 +523,6 @@ impl DebuggerApp {
                     });
                 });
             });
-    }
-
-    fn render_controls(ui: &mut egui::Ui) {
-        ui.label("TODO Controls");
     }
 
     fn render_keyboard(ui: &mut egui::Ui, keypad: u16) {
@@ -552,12 +548,10 @@ impl eframe::App for DebuggerApp {
 
         SidePanel::right("right_panel")
             .resizable(true)
-            .default_width(200.0)
             .show(ctx, |ui| Self::render_disassembler(ui, &self.last_state));
 
         TopBottomPanel::top("top_panel").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                Self::render_controls(ui);
                 self.render_game_screen(ui);
             });
         });
