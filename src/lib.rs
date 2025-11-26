@@ -231,7 +231,7 @@ impl CPU {
                         .set(register, self.memory.get(self.index + i as u16));
                 }
                 if quirks.memory_increment {
-                    self.index += x as u16 + 1;
+                    self.index = self.index.wrapping_add(x as u16 + 1);
                 }
             }
             Or(vx, vy) => {
@@ -285,7 +285,7 @@ impl CPU {
                         .set(self.index + i as u16, self.get_register(register));
                 }
                 if quirks.memory_increment {
-                    self.index += x as u16 + 1;
+                    self.index = self.index.wrapping_add(x as u16 + 1);
                 }
             }
             Subtract(vx, vy) => {
