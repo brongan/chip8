@@ -467,9 +467,7 @@ impl DebuggerApp {
     }
 
     fn show_keyboard(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
-        self.cpu
-            .get_keypad_mut()
-            .set_state(Self::check_keyboard(ctx));
+        self.cpu.get_keypad_mut().0 = Self::check_keyboard(ctx);
         egui::CollapsingHeader::new("Keypad")
             .default_open(true)
             .show_unindented(ui, |ui| {

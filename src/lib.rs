@@ -191,7 +191,7 @@ impl CPU {
             FontCharacter(vx) => self.index = 0x50 + 5 * (self.get_register(vx) & 0xF) as u16,
             GetDelay(vx) => self.registers.set(vx, self.delay_timer.0),
             GetKey(vx) => {
-                let keys = self.keypad.get_state();
+                let keys = self.keypad.0;
                 for key in 0..16 {
                     if keys & (0b1 << key) > 0 {
                         self.registers.set(vx, key);
@@ -590,24 +590,15 @@ impl Display for Instruction {
 }
 
 #[derive(Default, Debug, Clone)]
-pub struct Keypad(u16);
+pub struct Keypad(pub u16);
 
 impl Keypad {
     pub fn is_pressed(&self, key_index: u8) -> bool {
-        (self.get_state() >> key_index) & 1 == 1
+        (self.0 >> key_index) & 1 == 1
     }
 
     pub fn enable_key(&mut self, key_index: u8) {
-        let state = self.get_state();
-        self.0 = state | 1 << key_index;
-    }
-
-    pub fn get_state(&self) -> u16 {
-        self.0
-    }
-
-    pub fn set_state(&mut self, val: u16) {
-        self.0 = val;
+        self.0 |= 1 << key_index;
     }
 }
 
