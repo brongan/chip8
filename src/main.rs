@@ -356,6 +356,10 @@ impl DebuggerApp {
                         ui.add(egui::Slider::new(&mut self.target_ips, 1..=10_000));
                         ui.end_row();
                     });
+                ui.checkbox(&mut self.cpu.quirks.vf_reset, "VF Reset");
+                ui.checkbox(&mut self.cpu.quirks.memory_increment, "Memory Increment");
+                ui.checkbox(&mut self.cpu.quirks.display_wait, "Display Wait");
+                ui.checkbox(&mut self.cpu.quirks.shift_vy, "Shifting");
 
                 ui.heading("Display");
 
@@ -481,7 +485,7 @@ impl DebuggerApp {
                                     ui.visuals().widgets.inactive.bg_fill
                                 };
 
-                                let btn = egui::Button::new(format!("{:X}", key_index))
+                                let btn = Button::new(format!("{:X}", key_index))
                                     .min_size(Vec2::new(60.0, 60.0))
                                     .fill(fill_color);
 

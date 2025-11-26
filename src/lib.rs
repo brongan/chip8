@@ -12,6 +12,7 @@ pub struct CPU {
     memory: Memory,
     screen: Screen,
     keypad: Keypad,
+    pub quirks: Quirks,
 }
 
 impl CPU {
@@ -97,8 +98,8 @@ impl CPU {
     }
 
     fn display(&mut self, x: Register, y: Register, height: u8) {
-        let vx = self.registers.get(x);
-        let vy = self.registers.get(y);
+        let vx = self.get_register(x);
+        let vy = self.get_register(y);
         let x = vx % 64;
         let y = vy % 32;
         let vf = self.registers.get_mut(Register::VF);
@@ -123,23 +124,25 @@ impl CPU {
         use Register::VF;
         match instruction {
             Add(vx, val) => {
-                *self.registers.get_mut(vx) = self.registers.get(vx).wrapping_add(val);
+                *self.registers.get_mut(vx) = self.get_register(vx).wrapping_add(val);
             }
-            AddIndex(vx) => self.index = self.index.wrapping_add(self.registers.get(vx) as u16),
+            AddIndex(vx) => self.index = self.index.wrapping_add(self.get_register(vx) as u16),
             AddReg(vx, vy) => {
-                let vy = self.registers.get(vy);
+                let vy = self.get_register(vy);
                 let vx = self.registers.get_mut(vx);
                 let (val, overflow) = vx.overflowing_add(vy);
                 *vx = val;
                 self.registers.set(VF, overflow as u8);
             }
             And(vx, vy) => {
-                *self.registers.get_mut(vx) &= self.registers.get(vy);
-                self.registers.set(VF, 0);
+                *self.registers.get_mut(vx) &= self.get_register(vy);
+                if self.quirks.vf_reset {
+                    self.registers.set(VF, 0);
+                }
             }
-            Assign(vx, vy) => self.registers.set(vx, self.registers.get(vy)),
+            Assign(vx, vy) => self.registers.set(vx, self.get_register(vy)),
             BinaryDecimalConversion(vx) => {
-                let val = self.registers.get(vx);
+                let val = self.get_register(vx);
                 let hundreds = val / 100;
                 let tens = (val / 10) % 10;
                 let ones = val % 10;
@@ -154,10 +157,10 @@ impl CPU {
             }
             CondSkip(cond) => {
                 let cond = match cond {
-                    Cond::Eq(vx, nn) => self.registers.get(vx) == nn,
-                    Cond::Neq(vx, nn) => self.registers.get(vx) != nn,
-                    Cond::EqReg(vx, vy) => self.registers.get(vx) == self.registers.get(vy),
-                    Cond::NeqReg(vx, vy) => self.registers.get(vx) != self.registers.get(vy),
+                    Cond::Eq(vx, nn) => self.get_register(vx) == nn,
+                    Cond::Neq(vx, nn) => self.get_register(vx) != nn,
+                    Cond::EqReg(vx, vy) => self.get_register(vx) == self.get_register(vy),
+                    Cond::NeqReg(vx, vy) => self.get_register(vx) != self.get_register(vy),
                 };
                 if cond {
                     return self.pc + 4;
@@ -165,7 +168,7 @@ impl CPU {
             }
             Display(x, y, height) => self.display(x, y, height),
             DisplayClear => self.screen = Screen::default(),
-            FontCharacter(vx) => self.index = 0x50 + 5 * (self.registers.get(vx) & 0xF) as u16,
+            FontCharacter(vx) => self.index = 0x50 + 5 * (self.get_register(vx) & 0xF) as u16,
             GetDelay(vx) => self.registers.set(vx, self.delay_timer.0),
             GetKey(vx) => {
                 let keys = self.keypad.get_state();
@@ -178,7 +181,7 @@ impl CPU {
                 return self.pc;
             }
             Jump(addr) => return addr,
-            JumpOffset(addr) => return addr.wrapping_add(self.registers.get(Register::V0) as u16),
+            JumpOffset(addr) => return addr.wrapping_add(self.get_register(Register::V0) as u16),
             LoadMemory(x) => {
                 let x = x as u8;
                 for i in 0..=x {
@@ -186,35 +189,44 @@ impl CPU {
                     self.registers
                         .set(register, self.memory.get(self.index + i as u16));
                 }
+                if self.quirks.memory_increment {
+                    self.index = x as u16 + 1;
+                }
             }
             Or(vx, vy) => {
-                *self.registers.get_mut(vx) |= self.registers.get(vy);
-                self.registers.set(VF, 0);
+                *self.registers.get_mut(vx) |= self.get_register(vy);
+                if self.quirks.vf_reset {
+                    self.registers.set(VF, 0);
+                }
             }
             Rand(vx, nn) => self.registers.set(vx, rand::rng().random::<u8>() & nn),
             Return => return self.stack.pop().unwrap(),
-            SetDelay(vx) => self.delay_timer.set(self.registers.get(vx)),
+            SetDelay(vx) => self.delay_timer.set(self.get_register(vx)),
             SetIndex(val) => self.index = val,
             SetRegister(vx, val) => self.registers.set(vx, val),
-            SetSound(vx) => self.sound_timer.set(self.registers.get(vx)),
+            SetSound(vx) => self.sound_timer.set(self.get_register(vx)),
             ShiftLeft(vx, _vy) => {
-                let (val, overflow) = self.registers.get(vx).overflowing_mul(2);
+                let (val, overflow) = self.get_register(vx).overflowing_mul(2);
                 self.registers.set(vx, val);
                 self.registers.set(Register::VF, overflow as u8);
             }
-            ShiftRight(vx, _vy) => {
-                let val = self.registers.get(vx);
+            ShiftRight(vx, vy) => {
+                let val = if self.quirks.shift_vy {
+                    self.get_register(vy)
+                } else {
+                    self.get_register(vx)
+                };
                 self.registers.set(vx, val >> 1);
                 self.registers.set(Register::VF, val & 0b1);
             }
             SkipIfKey(vx) => {
-                let key_index = self.registers.get(vx) & 0xF;
+                let key_index = self.get_register(vx) & 0xF;
                 if self.keypad.is_pressed(key_index) {
                     return self.pc + 4;
                 }
             }
             SkipIfNotKey(vx) => {
-                let key_index = self.registers.get(vx) & 0xF;
+                let key_index = self.get_register(vx) & 0xF;
                 if !self.keypad.is_pressed(key_index) {
                     return self.pc + 4;
                 }
@@ -224,26 +236,31 @@ impl CPU {
                 for i in 0..=x {
                     let register = Register::from_repr(i).unwrap();
                     self.memory
-                        .set(self.index + i as u16, self.registers.get(register));
+                        .set(self.index + i as u16, self.get_register(register));
+                }
+                if self.quirks.memory_increment {
+                    self.index = x as u16 + 1;
                 }
             }
             Subtract(vx, vy) => {
-                let vx_val = self.registers.get(vx);
-                let vy_val = self.registers.get(vy);
+                let vx_val = self.get_register(vx);
+                let vy_val = self.get_register(vy);
                 let (val, underflow) = vx_val.overflowing_sub(vy_val);
                 self.registers.set(vx, val);
                 self.registers.set(Register::VF, !underflow as u8);
             }
             SubtractOther(vx, vy) => {
-                let vx_val = self.registers.get(vx);
-                let vy_val = self.registers.get(vy);
+                let vx_val = self.get_register(vx);
+                let vy_val = self.get_register(vy);
                 let (val, underflow) = vy_val.overflowing_sub(vx_val);
                 self.registers.set(vx, val);
                 self.registers.set(Register::VF, !underflow as u8);
             }
             Xor(vx, vy) => {
-                *self.registers.get_mut(vx) ^= self.registers.get(vy);
-                self.registers.set(VF, 0);
+                *self.registers.get_mut(vx) ^= self.get_register(vy);
+                if self.quirks.vf_reset {
+                    self.registers.set(VF, 0);
+                }
             }
         }
         self.pc + 2
@@ -557,4 +574,16 @@ impl Keypad {
     pub fn set_state(&mut self, val: u16) {
         self.0 = val;
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Quirks {
+    /// If true, logic ops reset VF.
+    pub vf_reset: bool,
+    /// If true, FX55/FX65 increments I. If false, I stays same.
+    pub memory_increment: bool,
+    /// If true, clipping is handled differently (optional)
+    pub display_wait: bool,
+    /// If true, Vx = Vy >> 1. If false, Vx = Vx >> 1
+    pub shift_vy: bool,
 }
