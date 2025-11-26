@@ -16,6 +16,8 @@ use strum::IntoEnumIterator;
 
 use chip8::{CPU, Emulator, Instruction, Keypad, Register, Registers, Screen};
 
+const ACTIVE_COLOR: Color32 = Color32::from_rgb(50, 100, 200);
+
 struct DebuggerApp {
     state_rx: Receiver<CPU>,
     rom_tx: Sender<Vec<u8>>,
@@ -56,10 +58,13 @@ fn render_screen(screen: &Screen, on_color: Color32, off_color: Color32) -> egui
 }
 
 impl DebuggerApp {
-    fn new(cc: &eframe::CreationContext, rom_path: Option<String>) -> Self {
-        let rom = rom_path
+    fn load_rom(rom_path: &Option<String>) -> Option<Vec<u8>> {
+        rom_path
             .as_ref()
-            .map(|path| std::fs::read(path).expect("Failed to read ROM from path"));
+            .map(|path| std::fs::read(path).expect("Failed to read ROM from path"))
+    }
+    fn new(cc: &eframe::CreationContext, rom_path: Option<String>) -> Self {
+        let rom = Self::load_rom(&rom_path);
         let (state_tx, state_rx) = std::sync::mpsc::sync_channel(1);
         let (rom_tx, rom_rx) = std::sync::mpsc::channel::<Vec<u8>>();
         let keypad = Keypad::default();
@@ -344,26 +349,75 @@ impl DebuggerApp {
         egui::CollapsingHeader::new("Settings Menu")
             .default_open(true)
             .show_unindented(ui, |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(2.0, 2.0);
+                ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+                let running = self.running.load(Relaxed);
 
-                ui.horizontal(|ui| {
-                    let running = self.running.load(Relaxed);
+                let button_size = egui::vec2(250.0, 30.0);
+                let run = Button::new(if running { "Pause" } else { "Run" })
+                    .min_size(button_size)
+                    .fill(ACTIVE_COLOR);
+                let load = Button::new("Load ROM")
+                    .min_size(button_size)
+                    .fill(ACTIVE_COLOR);
+                let reset = Button::new("Reset")
+                    .min_size(button_size)
+                    .fill(ACTIVE_COLOR);
+                let reload = Button::new("Reload ROM")
+                    .min_size(button_size)
+                    .fill(ACTIVE_COLOR);
+                let step = Button::new("Step").min_size(button_size).fill(ACTIVE_COLOR);
+                let ten = Button::new("Step 10")
+                    .min_size(button_size)
+                    .fill(ACTIVE_COLOR);
 
-                    let run_button = Button::new(if running { "Pause" } else { "Run" })
-                        .min_size(egui::vec2(60.0, 30.0));
-                    let load_button = Button::new("Load ROM...").min_size(egui::vec2(150.0, 30.0));
-
-                    if ui.add(run_button).clicked() {
+                ui.heading("Controls");
+                ui.horizontal_centered(|ui| {
+                    if ui.add(run).clicked() {
                         self.running.store(!running, Relaxed);
                     }
-
-                    if ui.add(load_button).clicked() {
+                });
+                ui.horizontal_centered(|ui| {
+                    if ui.add(reset).clicked() {
+                        self.running.store(false, Relaxed);
+                        self.instruction_counter.store(0, Relaxed);
+                        if let Err(e) = self.rom_tx.send(vec![0; 3584]) {
+                            eprintln!("Failed to send rom to emulator thread: {e}");
+                        }
+                    }
+                });
+                ui.horizontal_centered(|ui| {
+                    if ui.add(load).clicked() {
+                        self.running.store(false, Relaxed);
                         let rom_tx = self.rom_tx.clone();
                         let running = self.running.clone();
                         let rom_path = self.rom_path.clone();
                         thread::spawn(move || Self::handle_rom_dialog(rom_tx, running, rom_path));
                     }
                 });
+                ui.horizontal_centered(|ui| {
+                    if ui.add(reload).clicked() {
+                        self.running.store(false, Relaxed);
+                        if let Some(rom) = Self::load_rom(&self.rom_path.lock().unwrap()) {
+                            if let Err(e) = self.rom_tx.send(rom) {
+                                eprintln!("Failed to send rom to emulator thread: {e}");
+                            }
+                        }
+                    }
+                });
+
+                ui.heading("Debug");
+
+                ui.horizontal_centered(|ui| {
+                    if ui.add(step).clicked() {
+                        eprintln!("TODO: step");
+                    }
+                });
+                ui.horizontal_centered(|ui| {
+                    if ui.add(ten).clicked() {
+                        eprintln!("TODO: step 10");
+                    }
+                });
+
                 ui.heading("Emulator");
 
                 let mut ips = self.target_ips.load(Relaxed);
@@ -442,18 +496,16 @@ impl DebuggerApp {
                 };
                 let instructions = self.instruction_counter.load(Relaxed);
 
-                egui::Grid::new("info_grid").num_columns(2).show(ui, |ui| {
-                    let rom = self
-                        .rom_path
-                        .lock()
-                        .unwrap()
-                        .as_deref()
-                        .unwrap_or("None")
-                        .to_owned();
-                    ui.label("ROM:");
-                    ui.label(rom);
-                    ui.end_row();
+                let rom = self
+                    .rom_path
+                    .lock()
+                    .unwrap()
+                    .as_deref()
+                    .unwrap_or("None")
+                    .to_owned();
+                ui.label(format!("ROM: {rom}"));
 
+                egui::Grid::new("info_grid").num_columns(2).show(ui, |ui| {
                     ui.label("GUI FPS:");
                     ui.label(format!("{:.1}", fps));
                     ui.end_row();
@@ -520,30 +572,35 @@ impl DebuggerApp {
 
     fn show_keyboard(ctx: &egui::Context, ui: &mut egui::Ui, keypad: &Keypad) {
         let mut key_state = Self::check_keyboard(ctx);
-        egui::Grid::new("keypad")
-            .spacing(Vec2::new(5.0, 5.0))
-            .show(ui, |ui| {
-                let key_layout: [u8; 16] = [
-                    0x1, 0x2, 0x3, 0xC, 0x4, 0x5, 0x6, 0xD, 0x7, 0x8, 0x9, 0xE, 0xA, 0x0, 0xB, 0xF,
-                ];
-                for row in key_layout.iter().array_chunks::<4>() {
-                    for &key_index in row {
-                        let fill_color = if keypad.is_pressed(key_index) {
-                            Color32::from_rgb(50, 100, 200)
-                        } else {
-                            ui.visuals().widgets.inactive.bg_fill
-                        };
+        egui::CollapsingHeader::new("Chip-8 CPU State")
+            .default_open(true)
+            .show_unindented(ui, |ui| {
+                egui::Grid::new("keypad")
+                    .spacing(Vec2::new(5.0, 5.0))
+                    .show(ui, |ui| {
+                        let key_layout: [u8; 16] = [
+                            0x1, 0x2, 0x3, 0xC, 0x4, 0x5, 0x6, 0xD, 0x7, 0x8, 0x9, 0xE, 0xA, 0x0,
+                            0xB, 0xF,
+                        ];
+                        for row in key_layout.iter().array_chunks::<4>() {
+                            for &key_index in row {
+                                let fill_color = if keypad.is_pressed(key_index) {
+                                    ACTIVE_COLOR
+                                } else {
+                                    ui.visuals().widgets.inactive.bg_fill
+                                };
 
-                        let btn = egui::Button::new(format!("{:X}", key_index))
-                            .min_size(Vec2::new(60.0, 60.0))
-                            .fill(fill_color);
+                                let btn = egui::Button::new(format!("{:X}", key_index))
+                                    .min_size(Vec2::new(60.0, 60.0))
+                                    .fill(fill_color);
 
-                        if ui.add(btn).clicked() {
-                            key_state |= 1 << key_index;
-                        };
-                    }
-                    ui.end_row();
-                }
+                                if ui.add(btn).clicked() {
+                                    key_state |= 1 << key_index;
+                                };
+                            }
+                            ui.end_row();
+                        }
+                    });
             });
         keypad.set_state(key_state);
     }
