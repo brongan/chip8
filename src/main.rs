@@ -480,8 +480,7 @@ impl DebuggerApp {
                         ];
                         for row in key_layout.iter().array_chunks::<4>() {
                             for &key_index in row {
-                                let fill_color = if self.cpu.get_keypad_mut().is_pressed(key_index)
-                                {
+                                let fill_color = if self.cpu.get_keypad().is_pressed(key_index) {
                                     ACTIVE_COLOR
                                 } else {
                                     ui.visuals().widgets.inactive.bg_fill

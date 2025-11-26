@@ -87,6 +87,10 @@ impl CPU {
         &self.screen
     }
 
+    pub fn get_keypad(&self) -> &Keypad {
+        &self.keypad
+    }
+
     pub fn get_keypad_mut(&mut self) -> &mut Keypad {
         &mut self.keypad
     }
