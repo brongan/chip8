@@ -12,6 +12,7 @@ pub struct CPU {
     memory: Memory,
     screen: Screen,
     keypad: Keypad,
+    keypad_waiting: Option<u8>,
 }
 
 impl CPU {
@@ -195,14 +196,23 @@ impl CPU {
             FontCharacter(vx) => self.index = 0x50 + 5 * (self.get_register(vx) & 0xF) as u16,
             GetDelay(vx) => self.registers.set(vx, self.delay_timer.0),
             GetKey(vx) => {
-                let keys = self.keypad.0;
-                for key in 0..16 {
-                    if keys & (0b1 << key) > 0 {
+                return match self.keypad_waiting {
+                    Some(key) if !self.keypad.is_pressed(key) => {
+                        self.keypad_waiting = None;
                         self.registers.set(vx, key);
-                        return self.pc + 2;
+                        self.pc + 2
                     }
-                }
-                return self.pc;
+                    Some(_) => self.pc,
+                    None => {
+                        for key in 0..16 {
+                            if self.keypad.is_pressed(key) {
+                                self.keypad_waiting = Some(key);
+                                return self.pc;
+                            }
+                        }
+                        self.pc
+                    }
+                };
             }
             Jump(addr) => return addr,
             JumpOffset(addr, vx) => {
