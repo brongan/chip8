@@ -378,7 +378,6 @@ impl DebuggerApp {
                 });
                 ui.horizontal_centered(|ui| {
                     if ui.add(reset).clicked() {
-                        self.running.store(false, Relaxed);
                         self.instruction_counter.store(0, Relaxed);
                         if let Err(e) = self.rom_tx.send(vec![0; 3584]) {
                             eprintln!("Failed to send rom to emulator thread: {e}");
@@ -387,7 +386,6 @@ impl DebuggerApp {
                 });
                 ui.horizontal_centered(|ui| {
                     if ui.add(load).clicked() {
-                        self.running.store(false, Relaxed);
                         let rom_tx = self.rom_tx.clone();
                         let running = self.running.clone();
                         let rom_path = self.rom_path.clone();
@@ -396,7 +394,6 @@ impl DebuggerApp {
                 });
                 ui.horizontal_centered(|ui| {
                     if ui.add(reload).clicked() {
-                        self.running.store(false, Relaxed);
                         if let Some(rom) = Self::load_rom(&self.rom_path.lock().unwrap()) {
                             if let Err(e) = self.rom_tx.send(rom) {
                                 eprintln!("Failed to send rom to emulator thread: {e}");
