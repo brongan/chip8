@@ -140,7 +140,7 @@ impl DebuggerApp {
             rom_path: Arc::new(Mutex::new(rom_path)),
             on_pixel_color,
             off_pixel_color,
-            game_scale: 16.0,
+            game_scale: 8.0,
             target_ips,
             target_fps,
             running,
@@ -221,17 +221,16 @@ impl DebuggerApp {
         sound: u8,
         registers: &Registers,
     ) {
-        egui::Grid::new("special_registers").show(ui, |ui| {
+        egui::Grid::new("registers").show(ui, |ui| {
             ui.style_mut().override_text_style = Some(TextStyle::Monospace);
             ui.label(format!("PC\n0x{pc:04X}\n{pc}"));
             ui.label(format!("IR\n0x{ir:04X}\n{ir}"));
             ui.label(format!("I\n0x{index:04X}\n{index}"));
+            ui.end_row();
             ui.label(format!("DT (delay)\n0x{delay:04X}\n{delay}"));
             ui.label(format!("ST (sound)\n0x{sound:04X}\n{sound}"));
-        });
-
-        egui::Grid::new("registers").show(ui, |ui| {
-            for row in Register::iter().array_chunks::<8>() {
+            ui.end_row();
+            for row in Register::iter().array_chunks::<4>() {
                 for reg in row {
                     let val = registers.get(reg);
                     ui.label(format!("{reg}\n0x{val:02X}\n{val}"));
@@ -348,7 +347,6 @@ impl DebuggerApp {
                 ui.spacing_mut().item_spacing = egui::vec2(2.0, 2.0);
 
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 8.0;
                     let running = self.running.load(Relaxed);
 
                     let run_button = Button::new(if running { "Pause" } else { "Run" })
@@ -366,7 +364,6 @@ impl DebuggerApp {
                         thread::spawn(move || Self::handle_rom_dialog(rom_tx, running, rom_path));
                     }
                 });
-                ui.separator();
                 ui.heading("Emulator");
 
                 let mut ips = self.target_ips.load(Relaxed);
@@ -405,28 +402,24 @@ impl DebuggerApp {
                 self.target_ips.store(ips, Relaxed);
                 self.target_fps.store(fps, Relaxed);
 
-                ui.separator();
                 ui.heading("Display");
 
                 egui::Grid::new("display_settings_grid")
                     .num_columns(2)
                     .spacing([20.0, 4.0])
                     .show(ui, |ui| {
-                        // Row 1: Game Scale
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             ui.label("Game Scale");
                         });
                         ui.add(egui::Slider::new(&mut self.game_scale, 1.0..=32.0));
                         ui.end_row();
 
-                        // Row 2: On Pixel Color
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             ui.label("On Pixel: ");
                         });
                         ui.color_edit_button_srgba(&mut self.on_pixel_color);
                         ui.end_row();
 
-                        // Row 3: Off Pixel Color
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             ui.label("Off Pixel:");
                         });
@@ -567,8 +560,6 @@ impl eframe::App for DebuggerApp {
                 self.render_info_panel(ui);
                 ui.separator();
                 self.render_cpu_state(ui, &self.last_state);
-                ui.separator();
-                self.render_settings_panel(ui);
             });
 
         SidePanel::right("right_panel")
@@ -577,7 +568,12 @@ impl eframe::App for DebuggerApp {
 
         TopBottomPanel::top("top_panel").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                self.render_game_screen(ui);
+                ui.vertical(|ui| {
+                    self.render_settings_panel(ui);
+                });
+                ui.vertical(|ui| {
+                    self.render_game_screen(ui);
+                });
             });
         });
 
