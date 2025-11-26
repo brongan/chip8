@@ -12,7 +12,6 @@ pub struct CPU {
     memory: Memory,
     screen: Screen,
     keypad: Keypad,
-    pub quirks: Quirks,
 }
 
 impl CPU {
@@ -119,7 +118,7 @@ impl CPU {
         }
     }
 
-    fn execute(&mut self, instruction: Instruction) -> u16 {
+    fn execute(&mut self, instruction: Instruction, quirks: &Quirks) -> u16 {
         use Instruction::*;
         use Register::VF;
         match instruction {
@@ -136,7 +135,7 @@ impl CPU {
             }
             And(vx, vy) => {
                 *self.registers.get_mut(vx) &= self.get_register(vy);
-                if self.quirks.vf_reset {
+                if quirks.vf_reset {
                     self.registers.set(VF, 0);
                 }
             }
@@ -189,13 +188,13 @@ impl CPU {
                     self.registers
                         .set(register, self.memory.get(self.index + i as u16));
                 }
-                if self.quirks.memory_increment {
+                if quirks.memory_increment {
                     self.index = x as u16 + 1;
                 }
             }
             Or(vx, vy) => {
                 *self.registers.get_mut(vx) |= self.get_register(vy);
-                if self.quirks.vf_reset {
+                if quirks.vf_reset {
                     self.registers.set(VF, 0);
                 }
             }
@@ -211,7 +210,7 @@ impl CPU {
                 self.registers.set(Register::VF, overflow as u8);
             }
             ShiftRight(vx, vy) => {
-                let val = if self.quirks.shift_vy {
+                let val = if quirks.shift_vy {
                     self.get_register(vy)
                 } else {
                     self.get_register(vx)
@@ -238,7 +237,7 @@ impl CPU {
                     self.memory
                         .set(self.index + i as u16, self.get_register(register));
                 }
-                if self.quirks.memory_increment {
+                if quirks.memory_increment {
                     self.index = x as u16 + 1;
                 }
             }
@@ -258,7 +257,7 @@ impl CPU {
             }
             Xor(vx, vy) => {
                 *self.registers.get_mut(vx) ^= self.get_register(vy);
-                if self.quirks.vf_reset {
+                if quirks.vf_reset {
                     self.registers.set(VF, 0);
                 }
             }
@@ -266,10 +265,13 @@ impl CPU {
         self.pc + 2
     }
 
-    pub fn tick(&mut self) {
+    pub fn tick(&mut self, quirks: &Quirks) {
         let instruction = self.fetch();
         let instruction = Instruction::decode(instruction).unwrap();
-        self.pc = std::cmp::min(self.execute(instruction), self.memory.0.len() as u16 - 2);
+        self.pc = std::cmp::min(
+            self.execute(instruction, quirks),
+            self.memory.0.len() as u16 - 2,
+        );
     }
 
     /// The caller should tick the timers at a 60hz frequency.

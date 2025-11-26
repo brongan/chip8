@@ -10,7 +10,7 @@ use std::thread;
 use std::time::Instant;
 use strum::IntoEnumIterator;
 
-use chip8::{CPU, Instruction, Register, Registers, Screen};
+use chip8::{CPU, Instruction, Quirks, Register, Registers, Screen};
 
 const ACTIVE_COLOR: Color32 = Color32::from_rgb(50, 100, 200);
 
@@ -49,6 +49,7 @@ struct DebuggerApp {
     game_scale: f32,
     target_ips: u32,
     running: bool,
+    quirks: Quirks,
 }
 
 /// Renders the 64x32 screen state into a displayable image
@@ -120,6 +121,7 @@ impl DebuggerApp {
             instruction_counter: 0,
             accumulator: 0.0,
             timer_accumulator: 0.0,
+            quirks: Quirks::default(),
         }
     }
 
@@ -331,14 +333,14 @@ impl DebuggerApp {
 
                 ui.horizontal_centered(|ui| {
                     if ui.add(step).clicked() {
-                        self.cpu.tick();
+                        self.cpu.tick(&self.quirks);
                         self.instruction_counter += 1;
                     }
                 });
                 ui.horizontal_centered(|ui| {
                     if ui.add(ten).clicked() {
                         for _ in 0..10 {
-                            self.cpu.tick();
+                            self.cpu.tick(&self.quirks);
                             self.instruction_counter += 1;
                         }
                     }
@@ -356,10 +358,10 @@ impl DebuggerApp {
                         ui.add(egui::Slider::new(&mut self.target_ips, 1..=10_000));
                         ui.end_row();
                     });
-                ui.checkbox(&mut self.cpu.quirks.vf_reset, "VF Reset");
-                ui.checkbox(&mut self.cpu.quirks.memory_increment, "Memory Increment");
-                ui.checkbox(&mut self.cpu.quirks.display_wait, "Display Wait");
-                ui.checkbox(&mut self.cpu.quirks.shift_vy, "Shifting");
+                ui.checkbox(&mut self.quirks.vf_reset, "VF Reset");
+                ui.checkbox(&mut self.quirks.memory_increment, "Memory Increment");
+                ui.checkbox(&mut self.quirks.display_wait, "Display Wait");
+                ui.checkbox(&mut self.quirks.shift_vy, "Shifting");
 
                 ui.heading("Display");
 
@@ -516,7 +518,7 @@ impl eframe::App for DebuggerApp {
             self.accumulator += dt;
             let cycle_duration = 1.0 / self.target_ips as f32;
             while self.accumulator >= cycle_duration {
-                self.cpu.tick();
+                self.cpu.tick(&self.quirks);
                 self.instruction_counter += 1;
                 self.accumulator -= cycle_duration;
             }
