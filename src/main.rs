@@ -1,44 +1,54 @@
 #![feature(iter_array_chunks)]
-use anyhow::anyhow;
 use eframe::egui::{
     self, Align, Button, CentralPanel, Color32, Frame, Key, Layout, RichText, ScrollArea,
     SidePanel, TextStyle, TopBottomPanel, Vec2,
 };
-use rodio::{OutputStream, Sink, Source};
-use spin_sleep::sleep;
-use std::sync::atomic::Ordering::Relaxed;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
+use rodio::source::SineWave;
+use rodio::{OutputStream, OutputStreamBuilder, Sink, Source};
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use strum::IntoEnumIterator;
 
-use chip8::{CPU, Emulator, Instruction, Keypad, Register, Registers, Screen};
+use chip8::{CPU, Instruction, Register, Registers, Screen};
 
 const ACTIVE_COLOR: Color32 = Color32::from_rgb(50, 100, 200);
 
+struct Rom {
+    path: String,
+    contents: Vec<u8>,
+}
+
+impl Rom {
+    pub fn new(path: String) -> Self {
+        let contents = std::fs::read(&path).expect("Failed to read ROM from path");
+        Self { path, contents }
+    }
+}
+
 struct DebuggerApp {
-    state_rx: Receiver<CPU>,
-    rom_tx: Sender<Vec<u8>>,
-    last_state: CPU,
-    keypad: Keypad,
+    cpu: CPU,
     display_texture: egui::TextureHandle,
     _stream: OutputStream,
     sink: Sink,
-    rom_path: Arc<Mutex<Option<String>>>,
+    rom: Option<Rom>,
+    rom_tx: Sender<(Vec<u8>, String)>,
+    rom_rx: Receiver<(Vec<u8>, String)>,
 
     // Stats
-    last_frame: Instant,
-    instruction_counter: Arc<AtomicU64>,
+    last_frame_time: Instant,
+    instruction_counter: u64,
+
+    // Timing
+    accumulator: f32,
+    timer_accumulator: f32,
 
     // Settings
     on_pixel_color: Color32,
     off_pixel_color: Color32,
     game_scale: f32,
-    target_ips: Arc<AtomicU32>,
-    target_fps: Arc<AtomicU32>,
-    running: Arc<AtomicBool>,
+    target_ips: u32,
+    running: bool,
 }
 
 /// Renders the 64x32 screen state into a displayable image
@@ -57,111 +67,59 @@ fn render_screen(screen: &Screen, on_color: Color32, off_color: Color32) -> egui
     }
 }
 
-impl DebuggerApp {
-    fn load_rom(rom_path: &Option<String>) -> Option<Vec<u8>> {
-        rom_path
-            .as_ref()
-            .map(|path| std::fs::read(path).expect("Failed to read ROM from path"))
+fn handle_rom_dialog(rom_tx: Sender<(Vec<u8>, String)>) {
+    if let Some(path) = rfd::FileDialog::new()
+        .add_filter("CHIP-8 ROM", &["ch8", "rom"])
+        .add_filter("All Files", &["*"])
+        .pick_file()
+    {
+        if let Ok(rom_data) = std::fs::read(&path) {
+            let path_str = path.to_string_lossy().to_string();
+            if rom_tx.send((rom_data, path_str)).is_err() {
+                eprintln!("Failed to send new ROM to main thread.");
+            }
+        }
     }
+}
+
+impl DebuggerApp {
     fn new(cc: &eframe::CreationContext, rom_path: Option<String>) -> Self {
-        let rom = Self::load_rom(&rom_path);
-        let (state_tx, state_rx) = std::sync::mpsc::sync_channel(1);
-        let (rom_tx, rom_rx) = std::sync::mpsc::channel::<Vec<u8>>();
-        let keypad = Keypad::default();
         let ctx = cc.egui_ctx.clone();
         ctx.set_visuals(egui::Visuals::dark());
 
-        let running = Arc::new(AtomicBool::new(rom.is_some()));
-        let target_ips = Arc::new(AtomicU32::new(700));
-        let target_fps = Arc::new(AtomicU32::new(60));
-        let instruction_counter: Arc<AtomicU64> = Arc::default();
+        let rom = rom_path.map(Rom::new);
+        let running = rom.is_some();
+        let (rom_tx, rom_rx) = std::sync::mpsc::channel();
+        let cpu = CPU::new(rom.as_ref().map(|rom| &rom.contents));
 
-        let cpu = CPU::new(rom, keypad.clone());
-        let mut emulator = Emulator {
-            cpu: cpu.clone(),
-            target_fps: target_fps.clone(),
-            cycle_accumulator: 0,
-        };
-        let ips = target_ips.clone();
-        let counter = instruction_counter.clone();
-        let running_clone = running.clone();
-        thread::spawn(move || {
-            loop {
-                if !running_clone.load(Relaxed) {
-                    sleep(Duration::from_millis(250));
-                    continue;
-                }
-
-                if let Ok(new_rom) = rom_rx.try_recv() {
-                    emulator.load_rom(new_rom);
-                    if state_tx.send(emulator.cpu.clone()).is_err() {
-                        eprintln!("UI closed channel after ROM load.");
-                        break;
-                    }
-                }
-
-                let start = Instant::now();
-                let ips = ips.load(Relaxed);
-                let instruction_time = Duration::from_secs_f64(1.0 / ips as f64);
-                counter.fetch_add(1, Relaxed);
-                if let Some(state) = emulator.tick(ips) {
-                    if state_tx.send(state).is_err() {
-                        eprintln!("UI closed channel.");
-                        break;
-                    }
-                    ctx.request_repaint();
-                }
-
-                let elapsed = start.elapsed();
-                if elapsed < instruction_time {
-                    sleep(instruction_time - elapsed);
-                }
-            }
-        });
-
-        let on_pixel_color = Color32::WHITE;
-        let off_pixel_color = Color32::BLACK;
         let image = egui::ColorImage::new([64, 32], vec![Color32::BLACK; 64 * 32]);
         let display_texture = cc
             .egui_ctx
             .load_texture("LCD", image, egui::TextureOptions::NEAREST);
 
-        let stream =
-            rodio::OutputStreamBuilder::open_default_stream().expect("open default audio stream");
-        let sink = rodio::Sink::connect_new(&stream.mixer());
-        let beep_sound = rodio::source::SineWave::new(440.0) // A 440hz tone
-            .amplify(0.20);
+        let stream = OutputStreamBuilder::open_default_stream().expect("open default audio stream");
+        let sink = Sink::connect_new(&stream.mixer());
+        let beep_sound = SineWave::new(440.0).amplify(0.20);
         sink.append(beep_sound);
         sink.pause();
 
         Self {
-            rom_tx,
-            state_rx,
-            last_state: cpu,
-            keypad,
+            cpu,
             display_texture,
             _stream: stream,
             sink,
-            rom_path: Arc::new(Mutex::new(rom_path)),
-            on_pixel_color,
-            off_pixel_color,
+            rom,
+            rom_tx,
+            rom_rx,
+            on_pixel_color: Color32::WHITE,
+            off_pixel_color: Color32::BLACK,
             game_scale: 8.0,
-            target_ips,
-            target_fps,
+            target_ips: 700,
             running,
-            last_frame: Instant::now(),
-            instruction_counter,
-        }
-    }
-
-    fn check_for_updates(&mut self) {
-        if let Ok(cpu) = self.state_rx.try_recv() {
-            if cpu.is_beep() {
-                self.sink.play();
-            } else {
-                self.sink.pause();
-            }
-            self.last_state = cpu;
+            last_frame_time: Instant::now(),
+            instruction_counter: 0,
+            accumulator: 0.0,
+            timer_accumulator: 0.0,
         }
     }
 
@@ -196,7 +154,7 @@ impl DebuggerApp {
         })
     }
 
-    fn render_cpu_state(&self, ui: &mut egui::Ui, cpu: &CPU) {
+    fn render_cpu_state(ui: &mut egui::Ui, cpu: &CPU) {
         egui::CollapsingHeader::new("Chip-8 CPU State")
             .default_open(true)
             .show_unindented(ui, |ui| {
@@ -273,7 +231,7 @@ impl DebuggerApp {
             });
     }
 
-    fn render_memory(ui: &mut egui::Ui, cpu: &CPU) {
+    fn render_memory(ui: &mut egui::Ui, memory: &[u8], pc: u16) {
         egui::CollapsingHeader::new("Memory Viewer")
             .default_open(true)
             .show_unindented(ui, |ui| {
@@ -287,14 +245,13 @@ impl DebuggerApp {
                                 ui.style_mut().override_text_style = Some(TextStyle::Monospace);
                                 ui.spacing_mut().item_spacing.x = 2.0;
 
-                                for (i, chunk) in cpu.get_memory().chunks(16).enumerate() {
+                                for (i, chunk) in memory.chunks(16).enumerate() {
                                     let addr = i * 16;
-                                    let color =
-                                        if (addr..addr + 16).contains(&(cpu.get_pc() as usize)) {
-                                            Color32::YELLOW
-                                        } else {
-                                            Color32::LIGHT_GREEN
-                                        };
+                                    let color = if (addr..addr + 16).contains(&(pc as usize)) {
+                                        Color32::YELLOW
+                                    } else {
+                                        Color32::LIGHT_GREEN
+                                    };
                                     let binary = chunk
                                         .into_iter()
                                         .map(|byte| format!("{:02X}", byte))
@@ -318,51 +275,23 @@ impl DebuggerApp {
             });
     }
 
-    fn handle_rom_dialog(
-        rom_tx: Sender<Vec<u8>>,
-        running: Arc<AtomicBool>,
-        rom_path: Arc<Mutex<Option<String>>>,
-    ) -> anyhow::Result<()> {
-        let path = rfd::FileDialog::new()
-            .add_filter("CHIP-8 ROM", &["ch8", "rom"])
-            .add_filter("All Files", &["*"])
-            .pick_file()
-            .ok_or(anyhow!("File dialog did not result in file path."))?;
-
-        let rom_data = std::fs::read(&path).map_err(|e| anyhow!("Failed to load ROM: {e}"))?;
-        rom_tx
-            .send(rom_data)
-            .map_err(|e| anyhow!("Failed to send ROM to emulator thread: {}", e))?;
-        running.store(true, Relaxed);
-        let mut rom_path = rom_path
-            .lock()
-            .map_err(|e| anyhow!("Failed to lock rom_path: {e}"))?;
-        *rom_path = Some(
-            path.into_os_string()
-                .into_string()
-                .expect("Use UTF-8 filenames."),
-        );
-        Ok(())
-    }
-
     fn render_settings_panel(&mut self, ui: &mut egui::Ui) {
         egui::CollapsingHeader::new("Settings Menu")
             .default_open(true)
             .show_unindented(ui, |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
-                let running = self.running.load(Relaxed);
 
                 let button_size = egui::vec2(250.0, 30.0);
-                let run = Button::new(if running { "Pause" } else { "Run" })
+                let pause_run = Button::new(if self.running { "Pause" } else { "Run" })
                     .min_size(button_size)
                     .fill(ACTIVE_COLOR);
-                let load = Button::new("Load ROM")
+                let load_rom = Button::new("Load ROM")
                     .min_size(button_size)
                     .fill(ACTIVE_COLOR);
                 let reset = Button::new("Reset")
                     .min_size(button_size)
                     .fill(ACTIVE_COLOR);
-                let reload = Button::new("Reload ROM")
+                let reload_rom = Button::new("Reload ROM")
                     .min_size(button_size)
                     .fill(ACTIVE_COLOR);
                 let step = Button::new("Step").min_size(button_size).fill(ACTIVE_COLOR);
@@ -372,33 +301,29 @@ impl DebuggerApp {
 
                 ui.heading("Controls");
                 ui.horizontal_centered(|ui| {
-                    if ui.add(run).clicked() {
-                        self.running.store(!running, Relaxed);
+                    if ui.add(pause_run).clicked() {
+                        self.running = !self.running;
                     }
                 });
                 ui.horizontal_centered(|ui| {
                     if ui.add(reset).clicked() {
-                        self.instruction_counter.store(0, Relaxed);
-                        if let Err(e) = self.rom_tx.send(vec![0; 3584]) {
-                            eprintln!("Failed to send rom to emulator thread: {e}");
-                        }
+                        self.instruction_counter = 0;
+                        self.cpu = CPU::new(None);
                     }
                 });
                 ui.horizontal_centered(|ui| {
-                    if ui.add(load).clicked() {
+                    if ui.add(load_rom).clicked() {
+                        self.instruction_counter = 0;
                         let rom_tx = self.rom_tx.clone();
-                        let running = self.running.clone();
-                        let rom_path = self.rom_path.clone();
-                        thread::spawn(move || Self::handle_rom_dialog(rom_tx, running, rom_path));
+                        thread::spawn(move || {
+                            handle_rom_dialog(rom_tx);
+                        });
                     }
                 });
                 ui.horizontal_centered(|ui| {
-                    if ui.add(reload).clicked() {
-                        if let Some(rom) = Self::load_rom(&self.rom_path.lock().unwrap()) {
-                            if let Err(e) = self.rom_tx.send(rom) {
-                                eprintln!("Failed to send rom to emulator thread: {e}");
-                            }
-                        }
+                    if ui.add(reload_rom).clicked() {
+                        self.instruction_counter = 0;
+                        self.cpu = CPU::new(self.rom.as_ref().map(|rom| &rom.contents));
                     }
                 });
 
@@ -406,52 +331,31 @@ impl DebuggerApp {
 
                 ui.horizontal_centered(|ui| {
                     if ui.add(step).clicked() {
-                        eprintln!("TODO: step");
+                        self.cpu.tick();
+                        self.instruction_counter += 1;
                     }
                 });
                 ui.horizontal_centered(|ui| {
                     if ui.add(ten).clicked() {
-                        eprintln!("TODO: step 10");
+                        for _ in 0..10 {
+                            self.cpu.tick();
+                            self.instruction_counter += 1;
+                        }
                     }
                 });
 
                 ui.heading("Emulator");
 
-                let mut ips = self.target_ips.load(Relaxed);
-                let mut fps = self.target_fps.load(Relaxed);
-
                 egui::Grid::new("emulator_settings_grid")
                     .num_columns(2)
                     .spacing([40.0, 4.0]) // [column_spacing, row_spacing]
                     .show(ui, |ui| {
-                        // Row 1: Target IPS
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             ui.label("Target IPS");
                         });
-                        ui.add(egui::Slider::new(&mut ips, 1..=100_000));
-                        ui.end_row();
-
-                        // Row 2: Target FPS
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            ui.label("Target FPS");
-                        });
-                        const FPS_OPTIONS: &[u32] = &[30, 60, 120, 144, 240];
-                        egui::ComboBox::new("fps_select", "")
-                            .selected_text(format!("{} FPS", fps))
-                            .show_ui(ui, |ui| {
-                                for &fps_option in FPS_OPTIONS {
-                                    ui.selectable_value(
-                                        &mut fps,
-                                        fps_option,
-                                        format!("{} FPS", fps_option),
-                                    );
-                                }
-                            });
+                        ui.add(egui::Slider::new(&mut self.target_ips, 1..=10_000));
                         ui.end_row();
                     });
-
-                self.target_ips.store(ips, Relaxed);
-                self.target_fps.store(fps, Relaxed);
 
                 ui.heading("Display");
 
@@ -484,22 +388,11 @@ impl DebuggerApp {
         egui::CollapsingHeader::new("Chip-8 Emulator Info")
             .default_open(true)
             .show_unindented(ui, |ui| {
-                let frame_time = self.last_frame.elapsed();
+                let frame_time = self.last_frame_time.elapsed();
                 let fps = 1.0 / frame_time.as_secs_f64();
-                let state = if self.running.load(Relaxed) {
-                    "Running"
-                } else {
-                    "Stopped"
-                };
-                let instructions = self.instruction_counter.load(Relaxed);
+                let state = if self.running { "Running" } else { "Stopped" };
 
-                let rom = self
-                    .rom_path
-                    .lock()
-                    .unwrap()
-                    .as_deref()
-                    .unwrap_or("None")
-                    .to_owned();
+                let rom = self.rom.as_ref().map_or("None", |rom| &rom.path);
                 ui.label(format!("ROM: {rom}"));
 
                 egui::Grid::new("info_grid").num_columns(2).show(ui, |ui| {
@@ -516,21 +409,19 @@ impl DebuggerApp {
                     ui.end_row();
 
                     ui.label("Instructions Executed:");
-                    ui.label(format!("{instructions}"));
+                    ui.label(format!("{}", self.instruction_counter));
                     ui.end_row();
 
                     ui.label("Audio Status:");
-                    ui.colored_label(
-                        Color32::LIGHT_GREEN,
-                        if self.sink.is_paused() { "OK" } else { "BEEP" },
-                    );
+                    let label = if self.sink.is_paused() { "OK" } else { "BEEP" };
+                    ui.colored_label(Color32::LIGHT_GREEN, label);
                     ui.end_row();
                 });
             });
     }
 
     fn render_game_screen(&mut self, ui: &mut egui::Ui) {
-        let screen = self.last_state.get_screen();
+        let screen = self.cpu.get_screen();
         let image = render_screen(screen, self.on_pixel_color, self.off_pixel_color);
         self.display_texture
             .set(image, egui::TextureOptions::NEAREST);
@@ -567,9 +458,11 @@ impl DebuggerApp {
             });
     }
 
-    fn show_keyboard(ctx: &egui::Context, ui: &mut egui::Ui, keypad: &Keypad) {
-        let mut key_state = Self::check_keyboard(ctx);
-        egui::CollapsingHeader::new("Chip-8 CPU State")
+    fn show_keyboard(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
+        self.cpu
+            .get_keypad_mut()
+            .set_state(Self::check_keyboard(ctx));
+        egui::CollapsingHeader::new("Keypad")
             .default_open(true)
             .show_unindented(ui, |ui| {
                 egui::Grid::new("keypad")
@@ -581,7 +474,8 @@ impl DebuggerApp {
                         ];
                         for row in key_layout.iter().array_chunks::<4>() {
                             for &key_index in row {
-                                let fill_color = if keypad.is_pressed(key_index) {
+                                let fill_color = if self.cpu.get_keypad_mut().is_pressed(key_index)
+                                {
                                     ACTIVE_COLOR
                                 } else {
                                     ui.visuals().widgets.inactive.bg_fill
@@ -592,20 +486,50 @@ impl DebuggerApp {
                                     .fill(fill_color);
 
                                 if ui.add(btn).clicked() {
-                                    key_state |= 1 << key_index;
+                                    self.cpu.get_keypad_mut().enable_key(key_index);
                                 };
                             }
                             ui.end_row();
                         }
                     });
             });
-        keypad.set_state(key_state);
     }
 }
 
 impl eframe::App for DebuggerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.check_for_updates();
+        if let Ok((contents, path)) = self.rom_rx.try_recv() {
+            self.cpu = CPU::new(Some(&contents));
+            self.rom = Some(Rom { path, contents });
+            self.running = true;
+            self.instruction_counter = 0;
+        }
+
+        let dt = self.last_frame_time.elapsed().as_secs_f32();
+        self.last_frame_time = Instant::now();
+
+        if self.running {
+            self.accumulator += dt;
+            let cycle_duration = 1.0 / self.target_ips as f32;
+            while self.accumulator >= cycle_duration {
+                self.cpu.tick();
+                self.instruction_counter += 1;
+                self.accumulator -= cycle_duration;
+            }
+
+            self.timer_accumulator += dt;
+            let timer_step = 1.0 / 60.0;
+            while self.timer_accumulator >= timer_step {
+                self.cpu.tick_timers();
+                self.timer_accumulator -= timer_step;
+            }
+        }
+
+        if self.cpu.is_beep() {
+            self.sink.play();
+        } else {
+            self.sink.pause();
+        }
 
         SidePanel::left("left_panel")
             .resizable(true)
@@ -613,12 +537,12 @@ impl eframe::App for DebuggerApp {
             .show(ctx, |ui| {
                 self.render_info_panel(ui);
                 ui.separator();
-                self.render_cpu_state(ui, &self.last_state);
+                Self::render_cpu_state(ui, &self.cpu);
             });
 
         SidePanel::right("right_panel")
             .resizable(true)
-            .show(ctx, |ui| Self::render_disassembler(ui, &self.last_state));
+            .show(ctx, |ui| Self::render_disassembler(ui, &self.cpu));
 
         TopBottomPanel::top("top_panel").show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -636,14 +560,15 @@ impl eframe::App for DebuggerApp {
             ui.horizontal(|ui| {
                 ui.set_min_height(available_height);
                 ui.vertical(|ui| {
-                    Self::show_keyboard(ctx, ui, &self.keypad);
+                    self.show_keyboard(ctx, ui);
                 });
                 ui.vertical(|ui| {
-                    Self::render_memory(ui, &self.last_state);
+                    Self::render_memory(ui, self.cpu.get_memory(), self.cpu.get_pc());
                 });
             });
         });
-        self.last_frame = Instant::now();
+
+        ctx.request_repaint();
     }
 }
 

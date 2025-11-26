@@ -1,8 +1,5 @@
 use rand::prelude::*;
 use std::fmt::{self, Display};
-use std::sync::Arc;
-use std::sync::atomic::Ordering::Relaxed;
-use std::sync::atomic::{AtomicU16, AtomicU32};
 
 #[derive(Default, Debug, Clone)]
 pub struct CPU {
@@ -18,7 +15,7 @@ pub struct CPU {
 }
 
 impl CPU {
-    pub fn new(rom: Option<Vec<u8>>, keypad: Keypad) -> Self {
+    pub fn new(rom: Option<&Vec<u8>>) -> Self {
         let font = [
             0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
             0x20, 0x60, 0x20, 0x20, 0x70, // 1
@@ -35,7 +32,7 @@ impl CPU {
             0xF0, 0x80, 0x80, 0x80, 0xF0, // C
             0xE0, 0x90, 0x90, 0x90, 0xE0, // D
             0xF0, 0x80, 0xF0, 0x80, 0xF0, // E
-            0xF0, 0x80, 0xF0, 0x80, 0x80, // F;
+            0xF0, 0x80, 0xF0, 0x80, 0x80, // F
         ];
         let mut memory = Memory::default();
         memory.0[0x50..=0x9f].copy_from_slice(&font);
@@ -46,7 +43,6 @@ impl CPU {
         Self {
             memory,
             pc: 0x200,
-            keypad,
             ..Default::default()
         }
     }
@@ -89,6 +85,10 @@ impl CPU {
 
     pub fn get_screen(&self) -> &Screen {
         &self.screen
+    }
+
+    pub fn get_keypad_mut(&mut self) -> &mut Keypad {
+        &mut self.keypad
     }
 
     pub fn fetch(&self) -> u16 {
@@ -537,52 +537,24 @@ impl Display for Instruction {
     }
 }
 
-#[derive(Debug)]
-pub struct Emulator {
-    pub cpu: CPU,
-    pub target_fps: Arc<AtomicU32>,
-    pub cycle_accumulator: u32,
-}
-
-impl Emulator {
-    pub fn load_rom(&mut self, rom: Vec<u8>) {
-        self.cpu = CPU::new(Some(rom), self.cpu.keypad.clone());
-        self.cycle_accumulator = 0;
-    }
-
-    pub fn tick(&mut self, target_ips: u32) -> Option<CPU> {
-        self.cpu.tick();
-
-        let target_fps = self.target_fps.load(Relaxed);
-        let target_ips = target_ips;
-        self.cycle_accumulator += target_fps;
-        if self.cycle_accumulator > target_ips {
-            self.cycle_accumulator -= target_ips;
-            self.cpu.tick_timers();
-            return Some(self.cpu.clone());
-        }
-        None
-    }
-}
-
 #[derive(Default, Debug, Clone)]
-pub struct Keypad(pub Arc<AtomicU16>);
+pub struct Keypad(u16);
 
 impl Keypad {
     pub fn is_pressed(&self, key_index: u8) -> bool {
         (self.get_state() >> key_index) & 1 == 1
     }
 
-    pub fn enable_key(&self, key_index: u8) {
+    pub fn enable_key(&mut self, key_index: u8) {
         let state = self.get_state();
-        self.0.store(state | 1 << key_index, Relaxed);
+        self.0 = state | 1 << key_index;
     }
 
     pub fn get_state(&self) -> u16 {
-        self.0.load(Relaxed)
+        self.0
     }
 
-    pub fn set_state(&self, val: u16) {
-        self.0.store(val, Relaxed);
+    pub fn set_state(&mut self, val: u16) {
+        self.0 = val;
     }
 }
