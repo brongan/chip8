@@ -120,6 +120,7 @@ impl CPU {
 
     fn execute(&mut self, instruction: Instruction) -> u16 {
         use Instruction::*;
+        use Register::VF;
         match instruction {
             Add(vx, val) => {
                 *self.registers.get_mut(vx) = self.registers.get(vx).wrapping_add(val);
@@ -130,9 +131,12 @@ impl CPU {
                 let vx = self.registers.get_mut(vx);
                 let (val, overflow) = vx.overflowing_add(vy);
                 *vx = val;
-                self.registers.set(Register::VF, overflow as u8);
+                self.registers.set(VF, overflow as u8);
             }
-            And(vx, vy) => *self.registers.get_mut(vx) &= self.registers.get(vy),
+            And(vx, vy) => {
+                *self.registers.get_mut(vx) &= self.registers.get(vy);
+                self.registers.set(VF, 0);
+            }
             Assign(vx, vy) => self.registers.set(vx, self.registers.get(vy)),
             BinaryDecimalConversion(vx) => {
                 let val = self.registers.get(vx);
@@ -183,7 +187,10 @@ impl CPU {
                         .set(register, self.memory.get(self.index + i as u16));
                 }
             }
-            Or(vx, vy) => *self.registers.get_mut(vx) |= self.registers.get(vy),
+            Or(vx, vy) => {
+                *self.registers.get_mut(vx) |= self.registers.get(vy);
+                self.registers.set(VF, 0);
+            }
             Rand(vx, nn) => self.registers.set(vx, rand::rng().random::<u8>() & nn),
             Return => return self.stack.pop().unwrap(),
             SetDelay(vx) => self.delay_timer.set(self.registers.get(vx)),
@@ -234,7 +241,10 @@ impl CPU {
                 self.registers.set(vx, val);
                 self.registers.set(Register::VF, !underflow as u8);
             }
-            Xor(vx, vy) => *self.registers.get_mut(vx) ^= self.registers.get(vy),
+            Xor(vx, vy) => {
+                *self.registers.get_mut(vx) ^= self.registers.get(vy);
+                self.registers.set(VF, 0);
+            }
         }
         self.pc + 2
     }
@@ -560,9 +570,6 @@ pub struct Keypad(pub Arc<AtomicU16>);
 
 impl Keypad {
     pub fn is_pressed(&self, key_index: u8) -> bool {
-        if key_index > 15 {
-            return false; // Or panic!("Key index out of bounds")
-        }
         (self.get_state() >> key_index) & 1 == 1
     }
 
