@@ -525,15 +525,40 @@ impl DebuggerApp {
             });
     }
 
-    fn render_keyboard(ui: &mut egui::Ui, keypad: u16) {
-        ui.label(format!("TODO Keypad: {keypad}"));
+    fn show_keyboard(ctx: &egui::Context, ui: &mut egui::Ui, keypad: &Keypad) {
+        let mut key_state = Self::check_keyboard(ctx);
+        egui::Grid::new("keypad")
+            .spacing(Vec2::new(5.0, 5.0))
+            .show(ui, |ui| {
+                let key_layout: [u8; 16] = [
+                    0x1, 0x2, 0x3, 0xC, 0x4, 0x5, 0x6, 0xD, 0x7, 0x8, 0x9, 0xE, 0xA, 0x0, 0xB, 0xF,
+                ];
+                for row in key_layout.iter().array_chunks::<4>() {
+                    for &key_index in row {
+                        let fill_color = if keypad.is_pressed(key_index) {
+                            Color32::from_rgb(50, 100, 200)
+                        } else {
+                            ui.visuals().widgets.inactive.bg_fill
+                        };
+
+                        let btn = egui::Button::new(format!("{:X}", key_index))
+                            .min_size(Vec2::new(60.0, 60.0))
+                            .fill(fill_color);
+
+                        if ui.add(btn).clicked() {
+                            key_state |= 1 << key_index;
+                        };
+                    }
+                    ui.end_row();
+                }
+            });
+        keypad.set_state(key_state);
     }
 }
 
 impl eframe::App for DebuggerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.check_for_updates();
-        self.keypad.0.store(Self::check_keyboard(ctx), Relaxed);
 
         SidePanel::left("left_panel")
             .resizable(true)
@@ -560,8 +585,12 @@ impl eframe::App for DebuggerApp {
             let available_height = ui.available_height();
             ui.horizontal(|ui| {
                 ui.set_min_height(available_height);
-                Self::render_keyboard(ui, self.keypad.0.load(Relaxed));
-                Self::render_memory(ui, &self.last_state);
+                ui.vertical(|ui| {
+                    Self::show_keyboard(ctx, ui, &self.keypad);
+                });
+                ui.vertical(|ui| {
+                    Self::render_memory(ui, &self.last_state);
+                });
             });
         });
         self.last_frame = Instant::now();

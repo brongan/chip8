@@ -566,7 +566,16 @@ impl Keypad {
         (self.get_state() >> key_index) & 1 == 1
     }
 
+    pub fn enable_key(&self, key_index: u8) {
+        let state = self.get_state();
+        self.0.store(state | 1 << key_index, Relaxed);
+    }
+
     pub fn get_state(&self) -> u16 {
         self.0.load(Relaxed)
+    }
+
+    pub fn set_state(&self, val: u16) {
+        self.0.store(val, Relaxed);
     }
 }
