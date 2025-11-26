@@ -360,6 +360,7 @@ impl DebuggerApp {
                     });
                 ui.checkbox(&mut self.quirks.vf_reset, "VF Reset");
                 ui.checkbox(&mut self.quirks.memory_increment, "Memory Increment");
+                ui.checkbox(&mut self.quirks.clipping, "Clipping");
                 ui.checkbox(&mut self.quirks.display_wait, "Display Wait");
                 ui.checkbox(&mut self.quirks.shift_vy, "Shifting");
 

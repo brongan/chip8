@@ -96,22 +96,43 @@ impl CPU {
         (self.memory.0[pc] as u16) << 8 | self.memory.0[pc + 1] as u16
     }
 
-    fn display(&mut self, x: Register, y: Register, height: u8) {
-        let vx = self.get_register(x);
-        let vy = self.get_register(y);
-        let x = vx % 64;
-        let y = vy % 32;
+    fn display(&mut self, x: Register, y: Register, height: u8, clipping: bool) {
+        let vx = self.registers.get(x) as u16;
+        let vy = self.registers.get(y) as u16;
+        let start_x = vx % 64;
+        let start_y = vy % 32;
+
         let vf = self.registers.get_mut(Register::VF);
         *vf = 0;
-        for (j, y) in (y..std::cmp::min(32, y + height)).enumerate() {
-            let row = self.memory.get(self.index + j as u16);
-            for (i, x) in (x..std::cmp::min(64, x + 8)).enumerate() {
-                if row & (0b1 << (7 - i)) > 0 {
-                    if self.screen.0[y as usize][x as usize] {
-                        self.screen.0[y as usize][x as usize] = false;
+        for row in 0..height {
+            let sprite_byte = self.memory.get(self.index + row as u16);
+            let target_y = start_y + row as u16;
+            let draw_y = if clipping {
+                if target_y >= 32 {
+                    break;
+                }
+                target_y
+            } else {
+                target_y % 32
+            };
+
+            for col in 0..8 {
+                if (sprite_byte & (0x80 >> col)) != 0 {
+                    let target_x = start_x + col as u16;
+                    let draw_x = if clipping {
+                        if target_x >= 64 {
+                            continue;
+                        }
+                        target_x
+                    } else {
+                        target_x % 64
+                    };
+
+                    if self.screen.0[draw_y as usize][draw_x as usize] {
+                        self.screen.0[draw_y as usize][draw_x as usize] = false;
                         *vf = 1;
                     } else {
-                        self.screen.0[y as usize][x as usize] = true;
+                        self.screen.0[draw_y as usize][draw_x as usize] = true;
                     }
                 }
             }
@@ -165,7 +186,7 @@ impl CPU {
                     return self.pc + 4;
                 }
             }
-            Display(x, y, height) => self.display(x, y, height),
+            Display(x, y, height) => self.display(x, y, height, quirks.clipping),
             DisplayClear => self.screen = Screen::default(),
             FontCharacter(vx) => self.index = 0x50 + 5 * (self.get_register(vx) & 0xF) as u16,
             GetDelay(vx) => self.registers.set(vx, self.delay_timer.0),
@@ -590,6 +611,9 @@ pub struct Quirks {
     /// If true, FX55/FX65 increments I. If false, I stays same.
     pub memory_increment: bool,
     /// If true, clipping is handled differently (optional)
+    pub clipping: bool,
+    /// Drawing sprites to the display waits for the vertical blank interrupt,
+    /// limiting their speed to max 60 sprites per second.
     pub display_wait: bool,
     /// If true, Vx = Vy >> 1. If false, Vx = Vx >> 1
     pub shift_vy: bool,
