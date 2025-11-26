@@ -204,8 +204,13 @@ impl CPU {
             SetIndex(val) => self.index = val,
             SetRegister(vx, val) => self.registers.set(vx, val),
             SetSound(vx) => self.sound_timer.set(self.get_register(vx)),
-            ShiftLeft(vx, _vy) => {
-                let (val, overflow) = self.get_register(vx).overflowing_mul(2);
+            ShiftLeft(vx, vy) => {
+                let val = if quirks.shift_vy {
+                    self.get_register(vy)
+                } else {
+                    self.get_register(vx)
+                };
+                let (val, overflow) = val.overflowing_mul(2);
                 self.registers.set(vx, val);
                 self.registers.set(Register::VF, overflow as u8);
             }
