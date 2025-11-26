@@ -201,7 +201,14 @@ impl CPU {
                 return self.pc;
             }
             Jump(addr) => return addr,
-            JumpOffset(addr) => return addr.wrapping_add(self.get_register(Register::V0) as u16),
+            JumpOffset(addr, vx) => {
+                let offset = self.get_register(if quirks.jumping {
+                    Register::V0
+                } else {
+                    Register::from_repr(vx).unwrap()
+                }) as u16;
+                return addr.wrapping_add(offset);
+            }
             LoadMemory(x) => {
                 let x = x as u8;
                 for i in 0..=x {
@@ -450,7 +457,7 @@ pub enum Instruction {
     /// Jumps to address NNN.
     Jump(u16),
     /// Jumps to the address NNN plus V0.
-    JumpOffset(u16),
+    JumpOffset(u16, u8),
     /// Fills from V0 to VX (including VX) with values from memory, starting at address I. The offset from I is increased by 1 for each value read, but I itself is left unmodified.
     LoadMemory(Register),
     /// Sets VX to VX or VY. (bitwise OR operation).
@@ -522,7 +529,7 @@ impl Instruction {
             0x8 if n == 0xe => Some(ShiftLeft(x, y)),
             0x9 if n == 0x0 => Some(CondSkip(Cond::NeqReg(x, y))),
             0xA => Some(SetIndex(addr)),
-            0xB => Some(JumpOffset(addr)),
+            0xB => Some(JumpOffset(addr, nib2)),
             0xC => Some(Rand(x, nn)),
             0xD => Some(Display(x, y, n)),
             0xE if nn == 0x9E => Some(SkipIfKey(x)),
@@ -561,7 +568,7 @@ impl Display for Instruction {
             GetDelay(vx) => write!(f, "LD {vx}, DT"),
             GetKey(vx) => write!(f, "LD {vx}, K"),
             Jump(addr) => write!(f, "JP 0x{addr:03X}"),
-            JumpOffset(addr) => write!(f, "JP V0, 0x{addr:03X}"),
+            JumpOffset(addr, vx) => write!(f, "JP {vx}, 0x{addr:03X}"),
             LoadMemory(vx) => write!(f, "LD {vx}, [I]"),
             Or(vx, vy) => write!(f, "OR {vx}, {vy}"),
             Rand(vx, nn) => write!(f, "RND {vx}, 0x{nn:02X}"),
@@ -617,4 +624,6 @@ pub struct Quirks {
     pub display_wait: bool,
     /// If true, Vx = Vy >> 1. If false, Vx = Vx >> 1
     pub shift_vy: bool,
+    /// (Bnnn) doesn't use v0, but vX instead where X is the highest nibble of nnn
+    pub jumping: bool,
 }

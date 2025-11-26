@@ -363,6 +363,7 @@ impl DebuggerApp {
                 ui.checkbox(&mut self.quirks.clipping, "Clipping");
                 ui.checkbox(&mut self.quirks.display_wait, "Display Wait");
                 ui.checkbox(&mut self.quirks.shift_vy, "Shifting");
+                ui.checkbox(&mut self.quirks.jumping, "Jumping");
 
                 ui.heading("Display");
 
