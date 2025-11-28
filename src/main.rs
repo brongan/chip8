@@ -73,14 +73,12 @@ fn handle_rom_dialog(rom_tx: Sender<(Vec<u8>, String)>) {
         .add_filter("CHIP-8 ROM", &["ch8", "rom"])
         .add_filter("All Files", &["*"])
         .pick_file()
-    {
-        if let Ok(rom_data) = std::fs::read(&path) {
+        && let Ok(rom_data) = std::fs::read(&path) {
             let path_str = path.to_string_lossy().to_string();
             if rom_tx.send((rom_data, path_str)).is_err() {
                 eprintln!("Failed to send new ROM to main thread.");
             }
         }
-    }
 }
 
 impl DebuggerApp {
@@ -99,7 +97,7 @@ impl DebuggerApp {
             .load_texture("LCD", image, egui::TextureOptions::NEAREST);
 
         let stream = OutputStreamBuilder::open_default_stream().expect("open default audio stream");
-        let sink = Sink::connect_new(&stream.mixer());
+        let sink = Sink::connect_new(stream.mixer());
         let beep_sound = SineWave::new(440.0).amplify(0.20);
         sink.append(beep_sound);
         sink.pause();
@@ -173,7 +171,7 @@ impl DebuggerApp {
                 );
                 ui.separator();
 
-                Self::render_stack(ui, &cpu.get_stack());
+                Self::render_stack(ui, cpu.get_stack());
             });
     }
 
@@ -221,9 +219,9 @@ impl DebuggerApp {
                             ui.end_row();
 
                             for (i, &addr) in stack.iter().enumerate().rev() {
-                                ui.label(format!("{}", i));
+                                ui.label(format!("{i}"));
                                 ui.label(
-                                    RichText::new(format!("0x{:04X}", addr))
+                                    RichText::new(format!("0x{addr:04X}"))
                                         .text_style(TextStyle::Monospace),
                                 );
                                 ui.end_row();
@@ -255,8 +253,8 @@ impl DebuggerApp {
                                         Color32::LIGHT_GREEN
                                     };
                                     let binary = chunk
-                                        .into_iter()
-                                        .map(|byte| format!("{:02X}", byte))
+                                        .iter()
+                                        .map(|byte| format!("{byte:02X}"))
                                         .collect::<String>();
 
                                     let ascii_art = chunk
@@ -267,7 +265,7 @@ impl DebuggerApp {
                                         })
                                         .collect::<String>();
 
-                                    ui.colored_label(color, format!("0x{:04X}", addr));
+                                    ui.colored_label(color, format!("0x{addr:04X}"));
                                     ui.colored_label(color, binary);
                                     ui.colored_label(color, ascii_art);
                                     ui.end_row();
@@ -405,7 +403,7 @@ impl DebuggerApp {
 
                 egui::Grid::new("info_grid").num_columns(2).show(ui, |ui| {
                     ui.label("GUI FPS:");
-                    ui.label(format!("{:.1}", fps));
+                    ui.label(format!("{fps:.1}"));
                     ui.end_row();
 
                     ui.label("Frame Time:");
@@ -486,7 +484,7 @@ impl DebuggerApp {
                                     ui.visuals().widgets.inactive.bg_fill
                                 };
 
-                                let btn = Button::new(format!("{:X}", key_index))
+                                let btn = Button::new(format!("{key_index:X}"))
                                     .min_size(Vec2::new(60.0, 60.0))
                                     .fill(fill_color);
 
