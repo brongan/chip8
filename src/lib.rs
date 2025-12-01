@@ -18,6 +18,17 @@ pub struct Quirks {
     pub jumping: bool,
 }
 
+impl Quirks {
+    const MODERN: Quirks = Quirks {
+        vf_reset: true,
+        memory_increment: true,
+        clipping: true,
+        display_wait: false,
+        shift_vy: true,
+        jumping: true,
+    };
+}
+
 #[derive(Debug, Clone)]
 pub struct Screen(pub [[bool; 64]; 32]);
 

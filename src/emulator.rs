@@ -1,25 +1,28 @@
 use std::time::Duration;
 
-use crate::Quirks;
 use crate::cpu::{CPU, Keypad};
+use crate::{Quirks, Screen};
 
 #[derive(Debug, Default)]
 pub struct Emulator {
-    cpu: CPU,
-    pub target_ips: u32,
     pub running: bool,
+    pub target_ips: u32,
     pub quirks: Quirks,
+    cpu: CPU,
+    rom: Option<Vec<u8>>,
+    vsync_screen: Screen,
     cycle_accumulator: f32,
     timer_accumulator: f32,
     instruction_counter: u64,
-    rom: Option<Vec<u8>>,
 }
 
 impl Emulator {
     pub fn new(rom: Option<Vec<u8>>) -> Self {
         Self {
-            cpu: CPU::new(rom.as_ref()),
             running: rom.is_some(),
+            target_ips: 700,
+            quirks: Quirks::MODERN,
+            cpu: CPU::new(rom.as_ref()),
             rom,
             ..Default::default()
         }
@@ -47,6 +50,14 @@ impl Emulator {
 
     pub fn cpu(&self) -> &CPU {
         &self.cpu
+    }
+
+    pub fn screen(&self) -> &Screen {
+        if self.quirks.display_wait {
+            &self.vsync_screen
+        } else {
+            self.cpu.get_screen()
+        }
     }
 
     pub fn instruction_counter(&self) -> u64 {
@@ -83,6 +94,7 @@ impl Emulator {
             self.timer_accumulator += cycle_duration;
 
             while self.timer_accumulator >= timer_step {
+                self.vsync_screen = self.cpu.get_screen().to_owned();
                 self.cpu.tick_timers();
                 self.timer_accumulator -= timer_step;
             }
