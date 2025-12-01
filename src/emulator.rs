@@ -34,7 +34,7 @@ impl Emulator {
 
     pub fn update_rom(&mut self, rom: Vec<u8>) {
         self.rom = Some(rom);
-        self.reset();
+        self.reload_rom();
     }
 
     pub fn reload_rom(&mut self) {
@@ -42,6 +42,7 @@ impl Emulator {
         self.cpu = CPU::new(self.rom.as_ref());
         self.cycle_accumulator = 0.0;
         self.timer_accumulator = 0.0;
+        self.running = true;
     }
 
     pub fn cpu(&self) -> &CPU {
